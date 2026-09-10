@@ -303,12 +303,16 @@ npm run smoke:ui:full
 > 安装完依赖后再自动取二进制并做校验。
 
 ```bash
-git clone git@github.com:xiaomingliang927/Lumen-conv.git
+# HTTPS 克隆（无需配置 SSH 密钥，推荐给评审）
+git clone https://github.com/xiaomingliang927/Lumen-conv.git
 cd Lumen-conv
 
 # 一条命令搞定：安装依赖 → 补 Electron 运行时 → 获取 ffmpeg/ffprobe → 校验
 npm run setup
 ```
+
+> 仓库的 canonical 远端是 SSH（`git@github.com:xiaomingliang927/Lumen-conv.git`），
+> 如果你本机已配好 GitHub SSH key，用它也行。
 
 如果依赖已装好、只是二进制缺失或想换一份：
 

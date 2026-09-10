@@ -23,13 +23,16 @@
 | [D-013](#d-013-渲染层目录改名-src--renderer) | 目录命名 | `src/` → `renderer/` |
 | [D-014](#d-014-打包时二进制的释放方式extrarresources) | 二进制释放 | `extraResources` 释放 `.exe`，不走 asar |
 | [D-015](#d-015-应用图标用脚本生成而不是放一张现成图片) | 应用图标 | 用 ffmpeg `geq` 脚本生成，加像素自检防"成功但图是错的" |
+| [D-016](#d-016-跨进程传参统一走去响应式的纯对象) | 跨进程传参 | 统一 JSON 往返成纯对象，绝不把 Vue 响应式代理交给 IPC |
+| [D-017](#d-017-打包方式受限网络离线手工组装便携版而不是继续调-electron-builder) | 打包方式 | 受限网络下放弃 electron-builder，改为离线手工组装便携版 |
 
 ---
 
 ## D-001 界面选型：Electron + Vue 3
 
-**决策**：使用 Electron 38 + Vue 3.5 + Vite 7 + TypeScript 5.9 构建 Windows 桌面应用，用 electron-builder 打包成
-NSIS 安装包与 portable 单文件。
+**决策**：使用 Electron 38 + Vue 3.5 + Vite 7 + TypeScript 5.9 构建 Windows 桌面应用，
+打包保留两条路线：electron-builder 出 NSIS 安装包（`npm run dist:nsis`，**受限网络下本机做不出来**，
+见 D-017），以及离线手工组装的便携版（`npm run dist:portable`，**本机已实测产出并跑通**，见 D-017）。
 
 **备选方案**
 
@@ -57,8 +60,9 @@ NSIS 安装包与 portable 单文件。
   产物远大于 Tauri。对"格式转换器"这类自带重型二进制的工具来说尚可接受，但这是实打实的代价。
 - **内存占用高**：多进程模型（主进程 + 渲染进程 + GPU 进程）比原生应用吃内存。
 - **仍然带一个 Chromium**：对纯粹的工具类应用而言这是"为了 UI 开发效率付出的运行时成本"。
-- **打包链路更复杂**：asar、`extraResources`、原生二进制路径都要单独处理（见 D-014），
-  这也是本次会话中唯一没有验证完的环节。
+- **打包链路更复杂**：asar、`extraResources`、原生二进制路径都要单独处理（见 D-014 与 D-017），
+  这也是本次会话中最后才补齐的环节——**NSIS 安装包至今没做出来**（受限网络，原因见 D-017），
+  实际交付的打包产物是离线手工组装的便携版。
 - **放弃的机会**：如果本机 Rust 环境可用，Tauri 在体积与内存上明显更优。这个决策是环境约束的产物，不是技术偏好。
 
 ---
@@ -627,9 +631,10 @@ NSIS 安装包与 portable 单文件。
   安装包体积因此显著增大，且 `extraResources` 是**不做压缩优化**的（直接释放文件）。
 - **只有 Windows 路径被真正验证过**：`EXE` 常量按平台拼 `.exe`，
   但打包配置只有 `win: nsis x64`，**非 Windows 路径属于未验证代码**。
-- **这一步尚未实机验证**：`release/` 目录还没生成过，
-  所以"extraResources 在安装后确实能释放出可执行的 ffmpeg"目前只是配置与代码层面的推断，
-  没有安装包实测记录。这是本决策最大的未验证之处（图标问题已解决，见 D-015）。
+- **安装包形态尚未验证，便携版形态已验证**：NSIS 安装包在本机受限网络下做不出来（原因见 D-017），
+  所以"extraResources 在**安装后**确实能释放出可执行的 ffmpeg"仍只是配置与代码层面的推断；
+  但 `release/Lumen-conv-便携版/resources/bin/` 这个**相同布局**已经实机跑通
+  （便携版自检 31/31 通过、退出码 0，见 `docs/SESSION_SUMMARY.md` 第 4.1.1 节）。
 
 ---
 
@@ -685,3 +690,140 @@ NSIS 安装包与 portable 单文件。
   需要时手动执行 `npm run make:icon`（依赖 `resources/bin/ffmpeg.exe`，所以要先 `npm run setup`）。
 - **产物入库，脚本也入库**：`build/icon.ico` 与 `build/icon.png` 已生成并提交
   （合计不到 10 KB），这样打包不依赖"先跑一次图标脚本"；同时脚本保留，便于以后调整配色或加尺寸。
+- **图标已就绪，但当前唯一已产出的打包形态用不上它**：`scripts/package-portable.mjs` 会尝试用 `rcedit.exe`
+  把 `build/icon.ico` 写进便携版的 exe，但该版本 rcedit 在含非 ASCII 字符的路径下会失败（本项目路径含中文），
+  于是便携版 exe 仍是 Electron 默认图标、版本信息也是 Electron 原值（详见 D-017）。
+  本机没有产出过带图标的安装包。
+
+---
+
+## D-016 跨进程传参统一走去响应式的纯对象
+
+**决策**：渲染进程向主进程发送的任何结构化数据（当前主要是 `CreateJobRequest[]` 里的 `ConversionOptions`），
+都必须先**脱离 Vue 响应式**，以纯对象形式交给 `ipcRenderer.invoke`。
+统一做法是 JSON 往返：
+
+```ts
+// renderer/composables/useStore.ts
+export function effectiveOptions(file: LoadedFile): ConversionOptions {
+  const merged = { ...options.value, ...(file.overrides ?? {}) };
+  return JSON.parse(JSON.stringify(merged)) as ConversionOptions;
+}
+```
+
+**背景（这是一个已发生的真实缺陷，不是假想）**：这条决策是被一条让核心功能不可用的缺陷逼出来的。
+合并全局选项与文件级 `overrides` 时用展开运算符，**从响应式对象上读出的数组字段是 Proxy 数组**；
+`ipcRenderer.invoke` 用结构化克隆（structuredClone 语义）序列化参数，Proxy 不可克隆，
+于是抛 `An object could not be cloned.`，`startConversion()` 的 Promise 无人兜住，
+用户点「开始转换」**什么都不发生**。
+
+触发条件比最初以为的更宽：不只"改过字幕勾选"，而是**任何一次转换点击**——因为 `options` 这个 `ref`
+自身的 `subtitleStreamIndexes` / `audioStreamIndexes` 就已经是 Proxy 数组（可用
+`node -e "const {ref,isProxy}=require('vue');const o=ref({a:[]});console.log(isProxy({...o.value}.a))"`
+一类的最小实验复现，详见 `docs/SESSION_SUMMARY.md` 第 5.1.1 节）。
+
+**备选方案**
+
+| 方案 | 说明 | 为什么不选 |
+| --- | --- | --- |
+| **直接把响应式对象传给 IPC** | 代码最短（即修复前的写法） | **就是缺陷本身**。Proxy 不满足结构化克隆的类型要求，必抛 `An object could not be cloned.` |
+| **在主进程侧 `toRaw()`** | 收到参数后解包 | **时序上不可能**：克隆发生在渲染进程发送的那一刻，主进程拿到手之前就已经抛错了，根本没有"收到参数"这一步。而且 `toRaw()` 只解一层，合并结果里的嵌套数组仍是 Proxy |
+| **渲染进程用 `structuredClone()` 手动深拷贝** | 看起来最"正统" | 它和 IPC 用同一套序列化算法，**遇到 Proxy 一样抛 `could not be cloned`**（错误信息还完全相同，容易误判成"IPC 的问题"）。要让它工作必须先逐层 `toRaw()` 解包，既啰嗦又容易漏 |
+| **手写递归解包 / 引入 `klona`、`rfdc` 之类的深拷贝库** | 通用，能保留 Date / Map | 为一个 14 字段的扁平结构引依赖、写递归，收益与成本不匹配；本项目整体取向是"能不加依赖就不加"（`dependencies` 至今为空对象） |
+| **JSON 往返（`JSON.parse(JSON.stringify(x))`）** | 一行搞定，且天然只保留可克隆类型 | **选中**。它同时完成两件事：深度解包响应式、得到一个绝对可克隆的普通对象 |
+
+**选择理由**
+
+1. **它解决的是"类型"问题，而不只是"这次的值"问题**：JSON 往返之后，无论上游怎么加字段、
+   怎么嵌套，送给 IPC 的都是同一类普通对象——**不会因为以后某个字段变成数组/对象就重新踩坑**。
+2. **当前结构正好落在 JSON 的能力范围内**：`ConversionOptions` 的 14 个字段只有
+   `string` / `number` / `boolean` / `null` 与 `number[]` 这几种形态（见 `shared/types.ts`），
+   JSON 往返是无损的。
+3. **错误的传播方式已验证**：修复后 `npm run smoke:ui:full` **31/31 通过、退出码 0**，
+   控制台不再出现任何 `An object could not be cloned.`；同时 `startConversion()` 补了
+   `try/catch` + `showToast('无法创建转换任务：' + msg, 'danger', 8000)`，
+   这类错误以后不会再静默。
+
+**代价 / 权衡**
+
+- **会丢失 JSON 表达不了的类型**：`Date` 会变成 ISO 字符串、`Map`/`Set` 会变成 `{}`、
+  `undefined` 字段会被整个丢弃、`NaN`/`Infinity` 会变成 `null`、函数会消失。
+  **当前 `ConversionOptions` 里没有这类值**，所以可接受；但这是一条明确的边界——
+  如果将来要跨 IPC 传 `Date`（例如任务时间戳）或 `Map`，**不能再套用这个写法**，
+  应当改用显式的序列化（时间戳传 number、Map 转数组）或引入深拷贝方案。
+- **多一次序列化开销**：对 14 个字段的对象可以忽略；不应把这个写法用到大体量数据上
+  （例如整份探测结果或日志数组），那种场景应当只传必要字段。
+- **`as ConversionOptions` 是类型断言，不是校验**：JSON 往返不检查字段是否齐全。
+  `JSON.stringify` 丢掉 `undefined` 字段时类型系统不会报错，所以**新增字段必须给 `null` 默认值而不是留 `undefined`**。
+- **它只解决"传得过去"，不解决"传对了没有"**：参数正确性依然要靠冒烟测试与界面自检断言
+  （这也是为什么本轮同时强化了"按钮点击真的创建了任务"这条断言，见 `docs/SESSION_SUMMARY.md` 第 5.1.1 节）。
+- **纪律需要人来守**：目前靠注释与这条决策记录约束，**没有 lint 规则或类型层面的强制**
+  （例如禁止把 `Ref`/`reactive` 对象直接喂给 `window.converter.*`）。如果这类调用点继续增多，
+  应当考虑加一条 ESLint 规则或把 `preload` 的入参类型收紧为 `DeepReadonly<Plain>` 之类的纯数据类型。
+
+---
+
+## D-017 打包方式（受限网络）：离线手工组装便携版，而不是继续调 electron-builder
+
+**决策**：新增 `scripts/package-portable.mjs`，**完全离线手工组装** Windows 便携版
+（`npm run dist:portable` = `node scripts/package-portable.mjs --build`），产物为
+`release/Lumen-conv-便携版/`（`Lumen-conv.exe` 200.4 MB，目录总计 602.3 MB）。
+**放弃在本机用 `electron-builder --win nsis` 产出 NSIS 安装包**，但**保留 `package.json` 里完整的
+electron-builder 配置**与 `npm run dist:nsis` 入口，供有网络的环境使用。
+
+**背景（这不是设计取舍，是环境限制）**：`electron-builder --win nsis` 在本机**两次实测都卡在同一处**，
+以 `Timeout awaiting 'request' for 600000ms` 失败（10 分钟等待后超时）。两个原因：
+
+1. 它需要**额外的工具链**（`app-builder-bin`、`nsis`、`winCodeSign`），这些都要在打包时按需获取，受限网络下必然超时；
+2. 它使用的 **Electron 二进制缓存与 `@electron/get` 不通用**——`scripts/fetch-binaries.mjs --electron`
+   已经下载好的那份运行时它不认，所以"本地已经有 zip"也帮不上忙，它仍要重新下载。
+
+**备选方案**
+
+| 方案 | 说明 | 代价 / 为什么不选 |
+| --- | --- | --- |
+| **继续调 electron-builder（换镜像、加代理、预置缓存）** | 给 `ELECTRON_BUILDER_BINARIES_MIRROR` 等环境变量指向国内镜像，或手工把 `nsis` / `winCodeSign` 预置进缓存 | ① 瓶颈不只是"下载慢"：工具链要现取，且 Electron 缓存**不通用**这一条不是换个源能解决的；② 安装包**不是本轮的验收前提**（需求 2 要的是"能真的转码"），继续调它是在与一个不可控的外部依赖搏斗；③ 失败模式是 10 分钟超时，迭代一次的成本极高 |
+| **改用 `@electron/packager`** | 它复用 `@electron/get` 的缓存（也就是本机已经有的那份运行时），只用 `electron` 这一个依赖 | 仍然要**新装一个依赖**，而它同样不是零风险：它会自己去解析/校验 Electron 缓存，受限网络下仍可能卡；而且它给的是"解包目录"，要出单文件安装包还是得再配一套打包器。引入新依赖与本项目"能不加就不加（`dependencies` 至今为空对象）"的取向冲突 |
+| **手工组装（选中）**：复制运行时 + `@electron/asar` 打包 + 复制 ffmpeg + rcedit 写信息 + rename 收尾 | 逻辑很短、完全可复现、**不触发任何下载**；`@electron/asar` 与 `electron-winstaller`（提供 `rcedit.exe`）本来就已随 `electron-builder` 装在 `node_modules` 里，**不需要新增任何依赖** | 见下方"代价"，主要代价是**失去了 electron-builder 生态的全部配套** |
+| **不打包，只交付源码 + `npm run setup`** | 最省事 | 便携版的价值恰恰是"评审不需要自己构建"——clone 后必须联网抓 290 MB 二进制这一步会被直接卡住。已实测的便携版解决了这个问题 |
+
+**选择理由**
+
+1. **离线可复现是硬需求**：本机网络的不可控点已经出现过多次（npm 缓存 EPERM、Electron postinstall 卡住、
+   GitHub 直连不通），打包这一步不能再依赖网络。手工组装只用**磁盘上已有的东西**：
+   `node_modules/electron/dist`、`dist/`、`dist-electron/`、`resources/bin/`。
+2. **逻辑短到可以自己维护**：整个脚本 5 个步骤，没有隐藏的模板与中间产物，
+   出错时行为可预期（例如 rename 被占用就回退为复制，见下）。
+3. **产物形态正好与代码约定一致**：`resources/bin/ffmpeg.exe` 这个位置**同时满足开发态与打包态的查找路径**
+   （`binaries.ts` 的 `bundledCandidates()`），因此 `binaries.ts` **一行都不用改**（见 D-014）。
+4. **实测有效**：便携版实跑 `--smoke --smoke-file=… --smoke-convert` **31/31 通过、退出码 0**
+   （含应用内真实转换：`done`、产物 706 KB、进度 100%）。
+
+**代价 / 权衡（必须写清楚）**
+
+- **要自己维护 app.asar 的布局**：进 asar 的 `package.json` 是脚本手写的精简版
+  （只保留 `name` / `productName` / `version` / `description` / `author` / `license` / `main`），
+  且要手动排除 `default_app.asar`。Electron 的目录结构或 asar 约定一旦变化，得自己跟进。
+- **失去 electron-builder 生态的全部配套**：**NSIS 安装向导**、**自动更新**（`electron-updater` 那套）、
+  **代码签名**、多平台目标、以及"图标与版本信息由工具链自动写入"这条链路。
+  便携版只覆盖了"解包后能运行"这一种形态。
+- **当前便携版的 exe 是 Electron 默认图标，且没有版本信息**：脚本会调
+  `node_modules/electron-winstaller/vendor/rcedit.exe` 写图标与版本信息，但该版本 rcedit 在
+  **路径含非 ASCII 字符**时（本项目路径含中文）报 `Fatal error: Unable to load file`，脚本如实跳过。
+  实测 `Lumen-conv.exe` 的版本信息仍是 Electron 原值（`ProductName=Electron`、`OriginalFilename=electron.exe`）。
+  **脚本刻意不做环境相关绕行**（例如把 exe 复制到临时 ASCII 路径再改回来）——
+  那会让构建脚本依赖具体环境，反而更难维护；图标缺失不影响功能。
+- **前提是"已经装好依赖与二进制"**：脚本开头会检查 `node_modules/electron/dist/electron.exe` 与
+  `resources/bin/{ffmpeg,ffprobe}.exe`，缺失就直接失败并提示先跑 `npm run setup`。
+  所以"离线"指的是**打包过程**不联网，不是"从零开始、什么都不用下"。
+- **只有 Windows 路径被验证过**：脚本里写死了 `electron.exe`、`APP_NAME.exe`、`resources/bin/*.exe`，
+  没有做平台分支，非 Windows 环境属于未验证代码。
+- **没有把 `dist` 脚本改掉**：`npm run dist` 仍是 `npm run build && electron-builder --win`（原样保留），
+  新增的 `dist:nsis` 是它的显式 NSIS 版本；`dist:portable` 则指向新的离线脚本。
+  这样命名上有个需要记住的点：**`dist:portable` 不经过 electron-builder**，
+  而 `package.json` 的 `build.portable` 字段（`${productName}-${version}-portable.exe`）目前**无人使用**，
+  留作有网络环境时的备选。
+
+**这条决策的适用边界**：它是"**在受限网络、只有 Windows、三天工期**"这三个约束下的最优解，
+不是"手工组装比 electron-builder 更好"。一旦有稳定网络，`npm run dist:nsis`
+（带图标、带版本信息、带安装向导的正式安装包）应当是首选。

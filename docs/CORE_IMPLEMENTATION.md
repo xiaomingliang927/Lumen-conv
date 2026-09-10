@@ -181,6 +181,38 @@ progress=continue
 - **输出冲突**：默认自动加 ` (1)`、` (2)` 后缀，不覆盖用户已有文件；也刻意不做"静默覆盖"
 - **历史裁剪**：超过 300 条丢弃最老的已完成任务，避免长时间运行内存单调增长
 
+### 4.1 渲染进程状态管理与跨 IPC 传参：必须去响应式
+
+渲染层的状态中心是 `renderer/composables/useStore.ts`（模块级单例 + `ref`/`computed`，不引 Pinia，
+见 D-002）。它有一条**必须遵守的纪律**：
+
+> **任何要跨 IPC 送出去的值，都必须是"去响应式的纯对象"，不能是 Vue 的 Proxy。**
+
+原因：`contextBridge` 暴露的方法最终走 `ipcRenderer.invoke`，而 Electron IPC 用**结构化克隆**序列化参数，
+Proxy 不是可克隆类型，会直接抛 `An object could not be cloned.`。
+Vue 的 `ref`/`reactive` 是惰性代理——只要你从响应式对象上读出一个对象/数组字段，读到的就是 Proxy，
+所以 `{ ...options.value, ...file.overrides }` 这种看起来很正常的合并，产出的数组字段仍然是 Proxy。
+
+规范做法（`effectiveOptions()`）：
+
+```ts
+export function effectiveOptions(file: LoadedFile): ConversionOptions {
+  const merged = { ...options.value, ...(file.overrides ?? {}) };
+  return JSON.parse(JSON.stringify(merged)) as ConversionOptions;   // 脱掉整棵结构的响应式
+}
+```
+
+- 用 **JSON 往返**而不是 `structuredClone`：后者同样无法克隆 Proxy，且这里没有需要保类型的值
+  （结构里只有 string / number / boolean / null / 数组），JSON 往返最稳妥。取舍与备选方案见 **D-016**。
+- 这条纪律曾经被违反，代价是**「开始转换」按钮完全失效且不报错**：合并结果里的数组字段始终是 Proxy
+  （`options` 这个 `ref` 自己的数组字段就已经是 Proxy 数组，所以不只是"改过字幕勾选"才会中招），
+  点击后队列里什么都没有。真实缺陷的完整复盘见 `docs/SESSION_SUMMARY.md` 第 5.1.1 节。
+- 配套要求：**桥接层调用必须兜住异常**。`startConversion()` 用 `try/catch` 包住 `api.createJobs()`，
+  失败时 `console.error` + `showToast('无法创建转换任务：' + msg, 'danger', 8000)`。
+  跨 IPC 的失败默认只会留下一行无上下文的控制台错误，用户看到的是"点了没反应"。
+- 同类约束在自检代码里也成立：`executeJavaScript` 的表达式结果同样走结构化克隆，
+  所以 `window.__lumenAddFiles()` 必须返回 `undefined`，被测表达式必须以基本类型收尾（见 7.1）。
+
 ---
 
 ## 5. 需求 3：自主优化清单
@@ -234,16 +266,26 @@ progress=continue
 - 健壮性：错误翻译规则（磁盘满/显卡不可用/容器不兼容/取消）
 - 进度：百分比、速度、ETA、未知总时长的不确定进度
 
-当前共 **48 项，全部通过**（实测数据见 `docs/TEST_CASES.md` 的 A 部分）。
+当前共 **48 项通过 / 0 失败，总耗时 18.4s**（实测数据见 `docs/TEST_CASES.md` 的 A 部分）。
 
 `npm run smoke:ui` / `npm run smoke:ui:file` / `npm run smoke:ui:full` —— 界面自检，启动真实 Electron 窗口，
 用 `executeJavaScript` 检查关键元素，再用 `capturePage()` 截图到 `docs/screenshots/`，带退出码。三级递进：
 
 | 命令 | 做的事 | 检查项 |
 | --- | --- | --- |
-| `npm run smoke:ui` | 启动窗口 → 等 `data-store-ready` → 逐页切换截图 | 14 项 |
-| `npm run smoke:ui:file` | 加 `--smoke-file=…`，通过 `window.__lumenAddFiles` 走真实 `addFiles` 路径加载一个视频 | 21 项 |
-| `npm run smoke:ui:full` | 再加 `--smoke-convert`，在应用内真的点一次「开始转换」并等任务跑到终态 | 26 项 |
+| `npm run smoke:ui` | 启动窗口 → 等 `data-store-ready` → 逐页切换截图 | **14 项** |
+| `npm run smoke:ui:file` | 加 `--smoke-file=…`，通过 `window.__lumenAddFiles` 走真实 `addFiles` 路径加载一个视频 | **21 项** |
+| `npm run smoke:ui:full` | 再加 `--smoke-convert`，在应用内真的点一次「开始转换」并等任务跑到终态 | **31 项** |
+
+**同一套自检也会在打包态跑一遍**：便携版可以带参数启动，跑的是完全相同的 `runSmokeCheck()`：
+
+```bash
+release/Lumen-conv-便携版/Lumen-conv.exe --smoke --smoke-file=<绝对路径> --smoke-convert
+```
+
+实测 **31/31 通过、退出码 0**（含应用内真实转换：状态 `done`、产物 706 KB、进度 100%）。
+这一步不是重复劳动——打包态会暴露开发态永远碰不到的问题，最典型的就是 `app.getAppPath()` 指向
+`resources/app.asar`（一个文件）导致的 `ENOTDIR`（见 8.2）。
 
 **为什么不是"截到图就算过"**：早期版本的界面自检只看截图是否成功，结果截到过一张**空白的设置页**——
 因为 store 数据还没加载完，设置页的 `v-if` 让整块内容都没渲染，而 DOM 骨架（标题栏/导航/文件区）是存在的。
@@ -256,11 +298,130 @@ progress=continue
 （该钩子必须返回 `undefined`：`executeJavaScript` 会用结构化克隆把返回值传回主进程，
 Vue 的响应式对象与 Promise 都不可克隆，返回它们会让渲染进程直接崩溃。这条也已踩过。）
 
+#### 7.1 界面自检里的五条工程约定（都是踩坑换来的）
+
+**① 所有被测表达式包成 IIFE，以基本类型收尾。**
+`executeJavaScript` 会把**表达式的结果**结构化克隆回主进程，而 DOM 节点、Vue 响应式对象、Promise 都不可克隆。
+反面教材：早期写成 `void el.click(); true` —— `void` 只丢弃值，那个 DOM 节点仍会作为表达式中间值被克隆，
+于是抛 `An object could not be cloned.` 并让整个 `await` 失败（任务从未创建）。正确写法：
+
+```js
+(() => { document.querySelectorAll('.nav-item')[1].click(); return true; })()
+```
+
+**② 每一步都过 `evalJs(label, expr)` 封装。**
+原生克隆错误只给一行 `An object could not be cloned.`，**不带任何位置信息**，
+`runSmokeCheck()` 里有 15 处调用点（其中若干在等待循环里），出错时无从定位。
+`main.ts` 里的 `evalJs()` 给每一步加标签，失败时打印并抛出 `步骤「xxx」失败：…`：
+
+```ts
+const evalJs = async <T>(label: string, expression: string): Promise<T> => {
+  try {
+    return (await win.webContents.executeJavaScript(expression)) as T;
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error(`[smoke] ✘ 步骤「${label}」执行失败：${msg}`);
+    throw new Error(`步骤「${label}」失败：${msg}`);
+  }
+};
+```
+
+**③ 断言必须落在"这次操作造成的副作用"上，并且要先清场。**
+`--smoke-convert` 会先直接调一次 `createJobs` 做链路诊断（能区分"IPC 坏了"还是"界面路径坏了"），
+再做一次真实按钮点击。关键在于：**点击前先 `engine.remove()` 清空队列并记录 `beforeClick`**，
+点击后要求 `engine.list().length > beforeClick`（实测 0 → 1）。
+没有这一步，前一步诊断留下的任务会让"队列里有任务"这条断言在**按钮完全失效**时也成立——这就是假通过。
+
+**④ 渲染层挂全局错误监听，方便定位只在某条路径出现的克隆错误。**
+`renderer/App.vue` 在 `onMounted` 里注册 `unhandledrejection` 与 `error` 监听，
+并**显式 `String()` 化**错误内容（直接 `console.error(event)` 打不出内容）。
+
+**⑤ 一个文件只能有一个含义："截图文件名 = 该文件声称拍到的状态"。**
+`queue.png` 与 `queue-done.png` 一度是同一次运行里的同一张图（sha256 相同）：脚本先截
+`queue-done.png`（转换完成后），再截 `queue.png`，后者把**前一步产出的空队列那张**覆盖掉了，
+而文档仍然宣称"`queue.png` 是空队列"。修复方式不是"把图重命名"，而是让两者的**产出条件互斥**：
+`const ranConversion = process.argv.includes('--smoke-convert')`，跑过转换就**不写** `queue.png`，
+只在它不存在时打印一句提示。于是正确工作流变成两步：
+
+| 步骤 | 命令 | 新增截图 |
+| --- | --- | --- |
+| 1 | `npm run smoke:ui:file`（或 `--smoke --smoke-file=…`，**不带** `--smoke-convert`） | `main.png`、`main-with-file.png`、**`queue.png`（空队列）**、`settings.png` |
+| 2 | `npm run smoke:ui:full`（带 `--smoke-convert`） | 只新增 `queue-done.png`，**不动 `queue.png`** |
+
+实测两个文件已**哈希不同**：`queue.png` 22,942 字节（`FD116C83…`，空队列）/
+`queue-done.png` 58,482 字节（`2C69F2E6…`，有任务）。
+与 ③ 一样，这条约定针对的是同一类错误：**断言/产物被"另一条路径"满足**，看上去成功，实际什么都没证明。
+
 > 测试跑的是产品代码本身，而不是另写一份等价实现 —— 否则"测过了"没有说服力。
 
 ---
 
-## 8. 已知限制
+## 8. 便携版（打包态）的目录布局与路径约定
+
+便携版由 `scripts/package-portable.mjs` **离线手工组装**（`npm run dist:portable`），
+不经过 electron-builder。它的目录布局刻意与 `extraResources` 的语义保持一致：
+
+```
+release/Lumen-conv-便携版/
+├─ Lumen-conv.exe                主程序（Electron 运行时本体改名而来）
+├─ *.dll / *.pak / locales/      Electron 运行时（已排除用不到的 default_app.asar）
+├─ resources/
+│  ├─ app.asar                   主进程 + preload + 渲染层产物（dist/ + dist-electron/ + 精简 package.json）
+│  └─ bin/
+│     ├─ ffmpeg.exe              ← resources/bin/ffmpeg.exe
+│     └─ ffprobe.exe             ← resources/bin/ffprobe.exe
+└─ （运行期还会生成）docs/screenshots/  仅当带 --smoke 启动时，落在 exe 同级目录
+```
+
+### 8.1 为什么 `binaries.ts` 不需要打包态分支
+
+`binaries.ts` 的 `bundledCandidates()` 依次尝试两个候选：
+
+| 顺序 | 候选路径 | 命中场景 |
+| --- | --- | --- |
+| 1 | `process.resourcesPath/bin/<kind>.exe` | 打包态：`process.resourcesPath` = `<安装目录或便携版目录>/resources` |
+| 2 | `app.getAppPath()/resources/bin/<kind>.exe` | 开发态：`app.getAppPath()` = 项目根 |
+
+关键在于**同一份 `resources/bin/` 布局在两种形态下都成立**：便携版就是把两个 exe 复制到
+`resources/bin/`，与 electron-builder 的 `extraResources` 释放位置逐字一致。
+所以 `binaries.ts` **一行分支都不用加**，`fetch-binaries.mjs` 也只需要往一个地方写。
+（这一点在 D-014 里作为决策理由写下了，便携版是它的第二次验证：打包态实测
+`resources/bin/ffmpeg.exe -version` 输出 `N-126435-gf93cd72dde-20260906`。）
+
+### 8.2 打包态特有的路径陷阱：`app.getAppPath()` 指向一个文件
+
+界面自检的基准目录**不能**直接用 `app.getAppPath()`：
+
+- **开发态**：它确实等于项目根，`join(base, 'docs/screenshots')` 是正常目录；
+- **打包态**：它等于 `...\resources\app.asar` —— 那是一个**文件**。
+  拿它当目录去 `mkdirSync()` 会抛 `ENOTDIR, not a directory`（实测在便携版上踩到，
+  开发态 31/31 全绿也照样暴露不了这个问题）。
+
+修复方式是 `electron/main.ts` 里新增的 `smokeBaseDir()`：
+
+```ts
+function smokeBaseDir(): string {
+  return app.isPackaged ? path.dirname(app.getPath('exe')) : app.getAppPath();
+}
+```
+
+**截图目录**与 `--smoke-file=` 的**相对路径解析**都改用它。语义上这是"基准目录 =
+用户能看到、也写得进去的那个目录"：开发态是项目根，打包态是 exe 所在目录。
+
+> 这类问题的通用教训：凡是"开发态正好成立"的路径假设，都要在打包态再验一次。
+> 这也是为什么本项目的验证分两层——`smoke:ui:*`（开发态）与直接在便携版 exe 上跑同一套自检（打包态）。
+
+### 8.3 已知限制
+
+便携版的 `Lumen-conv.exe` **图标与版本信息仍是 Electron 原值**：脚本会尝试用
+`node_modules/electron-winstaller/vendor/rcedit.exe` 写入 `build/icon.ico` 与版本信息，
+但该版本 rcedit 在**路径含非 ASCII 字符**时（本项目路径含中文）报 `Fatal error: Unable to load file`，
+脚本如实跳过并打印警告，**刻意不做环境相关绕行**（例如把 exe 复制到临时 ASCII 路径再改回来）。
+需要带图标的正式安装包时，应在有网络的环境跑 `npm run dist:nsis`（详见 `docs/DECISIONS.md` D-017）。
+
+---
+
+## 9. 已知限制
 
 诚实列出当前版本没做到的事：
 
@@ -273,8 +434,10 @@ Vue 的响应式对象与 Promise 都不可克隆，返回它们会让渲染进�
 5. **GIF 的调色板是整段统计**，超长视频（> 5 分钟）做 GIF 会非常慢且体积巨大，UI 只给了提示没有硬性限制
 6. **打包产物未做代码签名**，Windows SmartScreen 会提示"未知发布者"
 7. **未做多语言**，界面文案为硬编码中文
-8. **打包尚未实机验证**：图标（`build/icon.ico`）已由脚本生成，但 `release/` 目录从未产出过，
-   安装后的 `extraResources` 释放路径也未经运行验证
+8. **没有 NSIS 安装包，便携版的 exe 用 Electron 默认图标、无版本信息**：`npm run dist:nsis`
+   （`electron-builder --win nsis`）在本机受限网络下无法完成（需要额外工具链，且它的 Electron 缓存与
+   `@electron/get` 不通用，两次实测都以 `Timeout awaiting 'request' for 600000ms` 失败，详见 D-017）。
+   已产出并实测跑通的是**离线手工组装的便携版**（见第 8 节），其图标写入因 rcedit 对非 ASCII 路径的限制而跳过（见 8.3）
 9. **界面自检依赖单实例锁**：`smoke:ui` 在已有实例运行时不会真正执行（见 `docs/SESSION_SUMMARY.md` 第 5.3 节）
 10. **`-movflags +faststart` 在直通分支不生效**：`buildVideoArgs()` 的 `-c copy` 分支在函数开头就 `return`，
     走不到后面 `if (container === 'mp4')` 那一段

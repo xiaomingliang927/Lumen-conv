@@ -109,6 +109,18 @@ interface PageReport {
 }
 
 /**
+ * 界面自检的基准目录。
+ *
+ * 开发态：app.getAppPath() 是项目根，直接用它。
+ * 打包态：app.getAppPath() 指向 ...\resources\app.asar —— 那是一个**文件**，
+ *   拿它去 mkdirSync / join 会抛 ENOTDIR（实测在便携版上踩到）。
+ *   所以打包态改用可执行文件所在目录（安装目录 / 便携版目录）。
+ */
+function smokeBaseDir(): string {
+  return app.isPackaged ? path.dirname(app.getPath('exe')) : app.getAppPath();
+}
+
+/**
  * `electron . --smoke` 模式：启动真实窗口、截图、并用 JS 检查关键元素是否渲染成功。
  *
  * 为什么要有它：笔试要求第 7 条明确说「不能连自己都没测试过」。
@@ -145,7 +157,7 @@ async function runSmokeCheck(): Promise<void> {
 
   const shotDelay = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-  const outDir = path.join(app.getAppPath(), 'docs', 'screenshots');
+  const outDir = path.join(smokeBaseDir(), 'docs', 'screenshots');
   const fs = await import('node:fs');
   fs.mkdirSync(outDir, { recursive: true });
 
@@ -269,7 +281,7 @@ async function runSmokeCheck(): Promise<void> {
   const smokeFileArg = process.argv.find((a) => a.startsWith('--smoke-file='));
   if (smokeFileArg) {
     const rel = smokeFileArg.slice('--smoke-file='.length);
-    const sample = path.isAbsolute(rel) ? rel : path.join(app.getAppPath(), rel);
+    const sample = path.isAbsolute(rel) ? rel : path.join(smokeBaseDir(), rel);
     if (!existsSync(sample)) {
       console.error(`[smoke] 指定的测试文件不存在：${sample}`);
       process.exit(1);
@@ -453,7 +465,7 @@ async function runSmokeCheck(): Promise<void> {
         );
         extraChecks.push([
           '应用内转换：队列卡片显示完成与产物大小',
-          queueReport.state.includes('已完成'),
+          queueReport.state.includes('已完成') && /\d/.test(queueReport.outSize) && queueReport.hasOpenBtn,
           `状态「${queueReport.state}」，产物 ${queueReport.outSize}，${queueReport.hasOpenBtn ? '有打开按钮' : '无打开按钮'}`,
         ]);
       } else {
@@ -462,8 +474,25 @@ async function runSmokeCheck(): Promise<void> {
     }
   }
 
-  // 依次切到另外两个页面截图，顺便验证路由切换没有报错
-  await capture('queue.png', 1);
+  /**
+   * 依次切到队列页 / 设置页截图。
+   *
+   * 防覆盖：只有在「没有跑过 --smoke-convert」时才写 queue.png。
+   * 否则同一次运行里已经截过"转换完成后的队列页"（queue-done.png），
+   * 再截一次 queue.png 会把空队列那张覆盖成同一张图 —— 这正是之前的实际 bug：
+   * 文档里宣称"queue.png 是空队列、queue-done.png 是转换完成后"，
+   * 而两个文件的 sha256 完全相同。
+   *
+   * 因此正确的截图工作流是两步：
+   *   1) `--smoke --smoke-file=…`            产出 main / main-with-file / queue / settings
+   *   2) `--smoke --smoke-file=… --smoke-convert`  额外产出 queue-done（不动 queue.png）
+   */
+  const ranConversion = process.argv.includes('--smoke-convert');
+  if (!ranConversion) {
+    await capture('queue.png', 1);
+  } else if (!existsSync(path.join(outDir, 'queue.png'))) {
+    console.warn('[smoke] 提示：queue.png 不存在，请先跑一次不带 --smoke-convert 的自检');
+  }
   await capture('settings.png', 2);
   // 回到转换页
   await evalJs<boolean>(
@@ -471,7 +500,7 @@ async function runSmokeCheck(): Promise<void> {
     `(() => { document.querySelectorAll('.nav-item')[0].click(); return true; })()`,
   );
 
-  const queuePage = shots.find((s) => s.name === 'queue.png')?.page;
+  const queuePage = shots.find((s) => s.name.startsWith('queue'))?.page;
   const settingsPage = shots.find((s) => s.name === 'settings.png')?.page;
 
   extraChecks.push(

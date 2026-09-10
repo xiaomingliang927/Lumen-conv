@@ -5,7 +5,7 @@
 
 - **产品名**：Lumen-conv 视频格式转换器
 - **包名 / 版本**：`lumen-conv` 1.0.0
-- **平台**：Windows x64（打包目标：NSIS 安装包 + portable）
+- **平台**：Windows x64（打包产物：`release/Lumen-conv-便携版/` 离线便携版；NSIS 安装包需在有网络的环境构建）
 - **License**：MIT
 - **仓库**：`git@github.com:xiaomingliang927/Lumen-conv.git`
 
@@ -13,8 +13,17 @@
 
 ## 界面截图
 
-以下 4 张截图位于 `docs/screenshots/`，**全部由 `npm run smoke:ui:file` 自动生成**
-（启动真实 Electron 窗口 → 加载真实视频 → 逐页断言并截图），不是手工摆拍的。
+以下 **5 张**截图位于 `docs/screenshots/`，**全部由界面自检命令自动生成**
+（启动真实 Electron 窗口 → 加载真实视频 → 逐页断言并截图 → **在应用内真的点一次「开始转换」并等任务跑完**），
+不是手工摆拍的。它们分**两步**产出（原因见下方 `queue.png` 的说明）：
+
+```bash
+# 第 1 步：产出 main.png / main-with-file.png / queue.png（空队列）/ settings.png
+npm run smoke:ui:file
+
+# 第 2 步：额外产出 queue-done.png（有任务），不会覆盖第 1 步的 queue.png
+npm run smoke:ui:full
+```
 
 ![主界面（空状态）](docs/screenshots/main.png)
 
@@ -29,18 +38,34 @@
 
 ![任务队列](docs/screenshots/queue.png)
 
-*任务队列页。自动截图抓到的是**空队列状态**——因为 `smoke:ui` 只切页不出任务。
-有任务时每个卡片可展开「查看 ffmpeg 命令」与「运行日志」，失败任务会给出原因、建议与「重试 / 复制诊断信息 / 打开位置」。*
+*任务队列页（**空队列**形态，22.4 KB）：**一条任务都没有**，队列区显示空状态引导；
+有任务时的形态见下一张。*
+
+![任务队列（真实转换完成后）](docs/screenshots/queue-done.png)
+
+***真实转换完成后**的队列页（57.1 KB）——这是"在界面上点一次按钮真的能转完一个文件"的证据：
+任务 `sample-h264.mp4` 状态「已完成」、预设「MP4 通用兼容」、耗时 `00:06`、
+**`661 KB → 706 KB`（原片 107%）**，输出路径为 `test-assets\samples\sample-h264 (2).mp4`，
+展开区可查看 ffmpeg 命令与 **57 行**运行日志，右侧是「打开位置」按钮。
+任务卡片上的状态徽标、"源大小 → 产物大小（占原片百分比）"、失败/取消任务的
+「重试 / 复制诊断信息 / 打开位置」都在这一张里。
+图中第二张「已取消」卡片来自自检脚本清理队列的动作（`engine.remove()` 对正在运行的任务会先 `cancel()`），
+不是手工操作产生的。*
+
+> 这两张图**内容不同**（sha256 不同），可以互相印证：`queue.png` 是空队列，
+> `queue-done.png` 有任务。早期版本里 `smoke:ui:full` 会在转换完成后再截一次 `queue.png`，
+> 把空队列那张覆盖成同一张图（两个文件 sha256 相同），现已修复——转换跑过时**不再写 `queue.png`**，
+> 只在它不存在时给出提示。
 
 ![设置与诊断](docs/screenshots/settings.png)
 
 *设置页：ffmpeg / ffprobe 实际路径与版本、每个编码器的可用性（硬件编码器为**真实试跑**结果）、
 转换偏好、主题与缓存清理。这一页信息量最大，能直接反映运行环境是否正常。*
 
-> 说明：`docs/screenshots/` 下的 PNG 由 `npm run smoke:ui:file` **自动生成并覆盖**，
-> 该命令同时执行 21 项界面断言（断言内容见 [docs/TEST_CASES.md](docs/TEST_CASES.md) 的 B0 节）。
-> 在你本地首次跑出截图之前，上面的图片引用会是空链接；
-> 截图清单与拍摄要点见 [docs/screenshots/README.md](docs/screenshots/README.md)。
+> 说明：`docs/screenshots/` 下的 5 张 PNG 由上面那两步命令**自动生成并覆盖**（第 1 步出前 4 张，第 2 步出 `queue-done.png`），
+> `smoke:ui:full` 一级同时执行 **31 项**界面断言（断言内容见 [docs/TEST_CASES.md](docs/TEST_CASES.md) 的 A7 / A8 / B0 节，
+> 截图清单见 [docs/screenshots/README.md](docs/screenshots/README.md)）。
+> 在你本地首次跑出截图之前，上面的图片引用会是空链接。
 
 ---
 
@@ -53,7 +78,7 @@
 | 文档 | 内容 |
 | --- | --- |
 | [docs/SESSION_SUMMARY.md](docs/SESSION_SUMMARY.md) | 会话总结：分阶段做了什么、交付了什么、验证到什么程度、遗留问题；第 5 节按"已修复 / 仍然存在"列出代码审查发现 |
-| [docs/DECISIONS.md](docs/DECISIONS.md) | 决策日志（ADR 风格）：15 条关键决策的备选方案与代价 |
+| [docs/DECISIONS.md](docs/DECISIONS.md) | 决策日志（ADR 风格）：17 条关键决策的备选方案与代价 |
 | [docs/FEEDBACK_LOG.md](docs/FEEDBACK_LOG.md) | 反馈记录：人类给出的要求与 AI 的响应落地情况 |
 | [docs/CORE_IMPLEMENTATION.md](docs/CORE_IMPLEMENTATION.md) | 核心实现说明：GIF 单进程调色板链、界面自检三级命令、安全模型等 |
 | [docs/TEST_CASES.md](docs/TEST_CASES.md) | 边界与异常用例：A 部分自动化覆盖、B 部分需人工确认 |
@@ -124,7 +149,7 @@
 
 ### 需求 4：会话总结 + 开发者决策与反馈记录
 
-即本仓库 `docs/` 下的文档：`SESSION_SUMMARY.md`（会话总结）、`DECISIONS.md`（决策日志，D-001 … D-015）、
+即本仓库 `docs/` 下的文档：`SESSION_SUMMARY.md`（会话总结）、`DECISIONS.md`（决策日志，D-001 … D-017）、
 `FEEDBACK_LOG.md`（反馈记录）、`CORE_IMPLEMENTATION.md`（核心实现说明）、`TEST_CASES.md`（边界与异常用例）。
 其中 SESSION_SUMMARY 明确区分了"已实机验证"与"尚未验证"的部分，并把代码缺陷按"已修复 / 仍然存在"两部分列出。
 
@@ -236,7 +261,7 @@
 
 **进程边界上的三条硬约束**（`renderer/` 里没有任何 Node 能力）：
 
-1. 渲染进程只能通过 `window.converter`（`preload.ts` 里显式列出的 26 个方法）访问系统能力，没有 `require`、没有 `fs`。
+1. 渲染进程只能通过 `window.converter`（`preload.ts` 里显式列出的 28 个方法）访问系统能力，没有 `require`、没有 `fs`。
 2. 所有请求返回值统一包成 `{ ok: true, data }` 或 `{ ok: false, error }`（`shared/types.ts` 的 `IpcResponse<T>`），
    避免异常跨进程后只剩一句 `Error invoking remote method`。
 3. 本地文件（缩略图）通过自定义协议 `lumen-media://local/<url编码的绝对路径>` 交给渲染进程，
@@ -344,10 +369,12 @@ npm run smoke              # 端到端冒烟：合成素材 → ffprobe 探测 �
 npm run smoke -- --quick   # 只跑核心用例（跳过 H.265 / 旋转样本的合成）
 npm run smoke:ui           # 构建后以 --smoke 启动 Electron，做界面自检并截图（14 项检查）
 npm run smoke:ui:file      # 上一项 + 加载真实视频后再截图（21 项检查）
-npm run smoke:ui:full      # 再额外在应用内真跑一次转换（26 项检查）
+npm run smoke:ui:full      # 再额外在应用内真的点一次「开始转换」并等任务跑完（31 项检查）
 ```
 
-**当前实测结果**：`npm run smoke` **48/48 通过**，`npm run smoke:ui:file` **21/21 通过**。
+**当前实测结果**：`npm run smoke` **48/48 通过**（0 失败，总耗时 18.4s），
+`npm run smoke:ui:full` **31/31 通过、退出码 0**（三级命令的检查项是递进追加的：14 → 21 → 31），
+`npm run typecheck` 主进程 `tsc` 与渲染层 `vue-tsc` 均退出码 0、零错误。
 不需要任何外部素材——测试视频用 `lavfi` 的 `testsrc2` + 正弦音现场合成，
 所以任何机器上 clone 下来（跑完 `npm run setup`）都能复现。
 逐条用例与判定条件见 [docs/TEST_CASES.md](docs/TEST_CASES.md)。
@@ -362,31 +389,85 @@ npm run smoke:ui:full      # 再额外在应用内真跑一次转换（26 项检
 `--smoke-file` 走的是 `window.__lumenAddFiles()`，内部就是拖拽用的同一个 `addFiles`，
 所以截出来的是真实交互结果而不是塞进去的假数据。
 
+`--smoke-convert`（`smoke:ui:full`）再加一层**副作用断言**：点击前先清空引擎队列并记录长度，
+点击「开始转换」后要求队列长度**从 0 变为 1**，再等任务跑到 `done`、校验产物存在与进度 100%。
+这条断言不是装饰——它正是发现"按钮静默失效"那个克隆缺陷的原因：早期只断言"截图成功 / 队列里有任务卡片"，
+而队列里恰好还留着自检诊断任务，于是按钮完全失效时断言**依然成立**（假通过）。
+根因与复盘见 [docs/SESSION_SUMMARY.md](docs/SESSION_SUMMARY.md) 第 5.1.1 节。
+
 > ⚠️ 跑界面自检前请确认**没有其它 Electron 实例在运行**：已有实例持单实例锁时，
 > `npm run smoke:ui` 不会刷新 `docs/screenshots/` 里的截图，而命令本身不报错。
 > 可以用 `docs/screenshots/*.png` 的时间戳确认这一轮确实跑过。
 
 ### 打包
 
+打包有**两条路线**，本机真正跑通的是第一条（离线手工组装便携版），第二条（NSIS 安装包）在受限网络下做不出来。
+
+#### 路线一（推荐，已实测）：离线便携版
+
 ```bash
-npm run dist            # 构建 + electron-builder --win（NSIS 安装包）
-npm run dist:portable   # 构建 + electron-builder --win portable（免安装单文件）
+npm run dist:portable   # = node scripts/package-portable.mjs --build
 ```
 
-产物输出到 `release/`，命名规则：
+`scripts/package-portable.mjs` **在打包过程中不发起任何网络请求**（前提是依赖与二进制已就位：
+脚本开头会检查 `node_modules/electron/dist/electron.exe` 与 `resources/bin/{ffmpeg,ffprobe}.exe`，缺失即报错并提示
+先跑 `npm run setup`），手工把便携版组装出来，步骤很短也可复现：
 
-- 安装包：`Lumen-conv-1.0.0-setup.exe`（NSIS，可选安装目录、创建桌面与开始菜单快捷方式、非 perMachine）
-- 免安装：`Lumen-conv-1.0.0-portable.exe`
+1. 复制 `node_modules/electron/dist`（跳过用不到的 `default_app.asar`）；
+2. 用 `@electron/asar` 把 `dist/` + `dist-electron/` + 一份精简 `package.json` 打成 `resources/app.asar`；
+3. 把 `resources/bin/ffmpeg.exe`、`ffprobe.exe` 复制到 `resources/bin/`（与开发态的查找路径一致，故 `binaries.ts` 无需改动）；
+4. 尝试用 `node_modules/electron-winstaller/vendor/rcedit.exe` 写图标与版本信息（本机失败，见"已知限制"）；
+5. 用 `rename` 把 staging 目录挪到最终位置，失败则回退为复制（Windows 上目录改名偶发 `EPERM`）。
+
+**产物**（实测）：
+
+| 项目 | 实测值 |
+| --- | --- |
+| 目录 | `release/Lumen-conv-便携版/` |
+| 可执行文件 | `Lumen-conv.exe`，**200.4 MB**（210,149,888 字节） |
+| 目录总计 | **602.3 MB**（Electron 运行时 + `ffmpeg.exe` 139.1 MB + `ffprobe.exe` 138.9 MB，按 1024 进制） |
+| 运行方式 | 双击即可，无需安装、无需另装 ffmpeg；整个目录可直接拷给别人 |
+
+`release/` 已在 `.gitignore` 中排除（`git check-ignore -v release/` 会命中 `.gitignore` 第 4 行），所以产物不入库。
+
+便携版**实跑了全套界面自检并 31/31 通过、退出码 0**：
+
+```bash
+release/Lumen-conv-便携版/Lumen-conv.exe --smoke --smoke-file=<绝对路径> --smoke-convert
+```
+
+其中包含应用内的真实转换（状态 `done`、产物 706 KB、进度 100%）。
+便携版内的 `resources/bin/ffmpeg.exe -version` 实测为 `N-126435-gf93cd72dde-20260906`，与开发态所用构建一致。
+
+#### 路线二（受限网络下做不出来）：electron-builder NSIS 安装包
+
+```bash
+npm run dist:nsis       # = npm run build && electron-builder --win nsis
+npm run dist            # 旧的等价入口，保持不变（npm run build && electron-builder --win）
+```
+
+**必须说清楚：NSIS 安装包本机没有产出过。** `electron-builder --win nsis` 在本机**无法完成**，
+两次实测都卡在同一处，以
+`Timeout awaiting 'request' for 600000ms` 失败：
+
+- 它需要**额外的工具链**（`app-builder-bin`、`nsis`、`winCodeSign`），这些要在打包时按需下载，受限网络下必然超时；
+- 它使用的 **Electron 二进制缓存与 `@electron/get` 不通用**——也就是 `scripts/fetch-binaries.mjs --electron`
+  已经下载好的那份运行时**它不认**，所以"本地已经有 zip"也帮不上忙。
+
+这是**环境限制**，不是设计取舍（决策记录见 [docs/DECISIONS.md](docs/DECISIONS.md) 的 D-017）。
+需要带图标的正式安装包时，请在**有网络的环境**执行 `npm run dist:nsis`；
+`package.json` 里的 electron-builder 配置（NSIS 选项、`extraResources`、`asarUnpack`）保持完整可用，没有被删掉。
+
+> 注意：`package.json` 的 `build` 字段里仍留着 electron-builder 的 `portable` 目标配置
+> （`${productName}-${version}-portable.exe`），但 **`npm run dist:portable` 不经过 electron-builder**，
+> 走的是上面路线一的离线组装；产物是"一个目录"而不是"一个单文件 exe"。
 
 打包相关配置都在 `package.json` 的 `build` 字段：
 
 - `files`：只打 `dist/`、`dist-electron/`、`package.json`
 - `extraResources`：把 `resources/bin/ffmpeg.exe`、`resources/bin/ffprobe.exe` 释放到安装目录的 `resources/bin/`
-  （**asar 内的 `.exe` 无法执行，必须走 extraResources**）
+  （**asar 内的 `.exe` 无法执行，必须走 extraResources**；`package-portable.mjs` 手工组装的目录布局与它一致）
 - `win.icon` 指向 `build/icon.ico`（7 档尺寸，由 `npm run make:icon` 生成）
-
-> ⚠️ **打包尚未实机验证。** 图标已就绪，但 `release/` 目录还没生成过，详见
-> [docs/SESSION_SUMMARY.md](docs/SESSION_SUMMARY.md)。
 
 ### 应用图标
 
@@ -453,6 +534,7 @@ Lumen-conv/
 │  ├─ make-icon.mjs              用 ffmpeg 的 geq 滤镜生成 build/icon.ico 与 icon.png（含像素自检）
 │  ├─ build-electron.mjs         esbuild 打包主进程与 preload（支持 --watch）
 │  ├─ dev-electron.mjs           等 dev server 就绪后启动 Electron + 主进程热重启
+│  ├─ package-portable.mjs       离线组装 Windows 便携版（不依赖 electron-builder，见"打包"一节）
 │  └─ fix-esbuild.mjs            修复 esbuild 平台二进制与 node_modules/.bin 垫片
 │
 ├─ resources/bin/                随应用分发的 ffmpeg.exe / ffprobe.exe（gitignored，约 278 MB）
@@ -460,8 +542,8 @@ Lumen-conv/
 ├─ docs/                         交付文档与截图
 ├─ dist/                         Vite 构建产物（gitignored）
 ├─ dist-electron/                esbuild 构建产物（gitignored）
-├─ release/                      electron-builder 输出（gitignored，尚未产出过）
-├─ test-assets/                  冒烟测试的合成素材与产物（gitignored）
+├─ release/                      打包输出（gitignored）：当前有 `Lumen-conv-便携版/`，由 dist:portable 生成
+├─ test-assets/                  冒烟测试的合成素材与产物（gitignored，但**会被测试重新生成**，忽略 ≠ 清空）
 ├─ README.upstream.md            远端仓库原有的 README（仅一行 `# Lumen-conv`），保留备查
 ├─ vite.config.ts                渲染层构建配置（root: renderer，端口 5273，`@` → renderer）
 ├─ tsconfig.json                 渲染层 + shared 的类型检查配置（`@/*` → `renderer/*`）
@@ -538,7 +620,9 @@ node scripts/fetch-binaries.mjs --force
 > **仓库不提交二进制**：`resources/bin/`（约 278 MB）与 `.downloads/`（约 190 MB 归档缓存）
 > 都在 `.gitignore` 里——单个 ffmpeg.exe 就有 139 MB，超过 GitHub 单文件 100 MB 的硬限制。
 > 所以 clone 之后必须执行 `npm run setup`（或 `node scripts/fetch-binaries.mjs`）才能真正跑起来。
-> 需要"开箱即用"的整包时，请用 `npm run dist` 产出的安装包。
+> 需要"开箱即用"的整包时，用 `npm run dist:portable` 产出离线便携版目录
+> （`release/Lumen-conv-便携版/`，约 602 MB，整个目录拷给别人即可运行）；
+> 带图标的 NSIS 安装包需在有网络的环境跑 `npm run dist:nsis`。
 
 ---
 
@@ -605,15 +689,17 @@ node scripts/fetch-binaries.mjs --force
 
 | 限制 | 说明 |
 | --- | --- |
-| **打包未验证** | `build/icon.ico` 与 `build/icon.png` 已由 `scripts/make-icon.mjs` 生成，但 `release/` 从未产出过，`npm run dist` / `npm run dist:portable` 还没跑通，"能装成安装包"仍只是配置层面的准备 |
+| **没有 NSIS 安装包** | `npm run dist:nsis`（`electron-builder --win nsis`）在本机**做不出来**：它需要额外工具链（`app-builder-bin` / `nsis` / `winCodeSign`）与一份与 `@electron/get` **不通用**的 Electron 缓存，受限网络下两次实测都以 `Timeout awaiting 'request' for 600000ms` 失败。**"能装成安装包"目前仍只是配置层面的准备**，替代方案是已实测跑通的 `npm run dist:portable`（离线便携版，见"打包"一节） |
+| **便携版 exe 用 Electron 默认图标、没有版本信息** | `package-portable.mjs` 会用 `electron-winstaller` 附带的 `rcedit.exe` 写图标与版本信息，但该版本 rcedit 在**路径含非 ASCII 字符**时（本项目路径含中文）报 `Fatal error: Unable to load file`，脚本如实跳过该步骤（实测 `Lumen-conv.exe` 的版本信息仍是 Electron 原值：`ProductName=Electron`、`OriginalFilename=electron.exe`）。**脚本刻意不做环境相关绕行**（例如把 exe 复制到临时 ASCII 路径再改回来），图标缺失不影响运行 |
+| **`test-assets/` 会被测试重新生成** | `test-assets/output/` 与 `test-assets/samples/` 已在 `.gitignore` 中排除，但**忽略 ≠ 清空**：这两个目录在磁盘上**仍然有文件**（`output/` 是最近一次 `npm run smoke` 的 9 个产物，`samples/` 是合成素材）。**已知现象**：界面自检的默认输出目录就是源文件同目录 + 自动改名策略，所以每跑一次 `npm run smoke:ui:full` 就会在 `test-assets/samples/` 里多出一个 `sample-h264 (n).mp4`；带序号的文件在多轮测试后被清理过，但**下次再跑仍会重新产生** |
 | **硬件编码器参数未在真卡上验证** | 本机只有 Intel 核显可用（**H.264 QSV 实测可用**），没有 NVIDIA / AMD 显卡：NVENC 与 AMF 在设置页显示"编码器初始化失败（通常是驱动问题）"。`-cq`（NVENC）/ `-b:v`（AMF）这些真卡参数**没有在任何硬件上跑过**，也没有任何一条真实转码用例走硬件编码器 |
-| **没有单元测试框架** | 没有 Vitest / Jest，纯函数（`renderer/utils/format.ts`、`progress.ts` 的解析、`sanitizeFileName()`）未做边界穷举。当前只有端到端冒烟（48 项）与界面自检（21 项）两层 |
+| **没有单元测试框架** | 没有 Vitest / Jest，纯函数（`renderer/utils/format.ts`、`progress.ts` 的解析、`sanitizeFileName()`）未做边界穷举。当前只有端到端冒烟（48 项）与界面自检（三级 14 / 21 / 31 项）两层 |
 | 字幕只做软字幕 | 不支持烧录（hardsub）、不支持外挂字幕文件、不支持把 MKV 内封字幕抽成 `.srt`；WebM 容器下会自动剔除图形/ASS 字幕并提示改用 MKV |
 | **没有断点续传** | 转换中断（取消 / 崩溃 / 关机）只能整段重来 |
 | **GIF 只统计整段调色板** | `palettegen=stats_mode=diff` 针对整段视频统计颜色，超长视频做 GIF 很慢且体积大。UI 只在预设提示里建议"先裁剪 3-6 秒"，**没有硬性限制** |
 | 直通不加 faststart | `-movflags +faststart` 只在重新编码分支追加；`-c copy` 分支在 `buildVideoArgs()` 开头就提前 return，所以「极速换壳」预设输出 MP4 时不会加 |
-| **打包产物未做代码签名** | Windows SmartScreen 会提示"未知发布者" |
-| 仅 Windows x64 | `electron-builder` 只配了 `win: nsis x64` 与 `portable`，未配置 macOS/Linux 目标 |
+| **打包产物未做代码签名** | Windows SmartScreen 会提示"未知发布者"；便携版连版本信息都还是 Electron 原值，问题更明显（见上表第 2 条） |
+| 仅 Windows x64 | `electron-builder` 只配了 `win: nsis x64`（外加一个未被 npm 脚本使用的 `portable` 目标），未配置 macOS/Linux 目标；`package-portable.mjs` 也只处理 Windows 布局 |
 | 仅简体中文 | 无国际化框架，文案硬编码 |
 | 无输出路径持久化 | 任务历史只存在内存中（上限 300 条），关闭应用后队列记录清空 |
 | 并发上限 4 | 硬编码上限，避免用户把并发调到把机器拖死 |
@@ -623,6 +709,7 @@ node scripts/fetch-binaries.mjs --force
 | 快捷键提示不全 | `Ctrl+O` / `Ctrl+1/2/3` 都已实现，但界面上只在侧边栏底部提示了 `Ctrl+O`，三个翻页快捷键没有文字说明 |
 | `sandbox: false` | `webPreferences` 里显式关闭了渲染进程沙箱。安全边界仍由 `contextIsolation: true`、`nodeIntegration: false`、`webSecurity: true` 与 preload 白名单共同保证，但比 Electron 默认更宽松 |
 | **界面自检需独占运行** | 已有 Electron 实例在跑时，`npm run smoke:ui` 不会刷新截图（命令本身不报错），容易把"没跑"误读成"跑过了"。跑之前先确认没有其它实例 |
+| **截图分两步、别只跑一半** | `queue.png`（空队列）只在**不带** `--smoke-convert` 的那一步产出；直接跑 `smoke:ui:full` 时脚本**不会**再写 `queue.png`，只在它不存在时打印一句提示。所以想同时保留两种形态，必须按"打包"上面的两步流程跑（`smoke:ui:file` → `smoke:ui:full`） |
 
 ### Electron 运行时安装失败怎么办
 
@@ -646,7 +733,8 @@ npm run fetch:electron
 
 ### 后续计划
 
-1. **实跑 `npm run dist` / `npm run dist:portable`**（图标已就绪），确认安装后 `resources/bin` 释放正确、能正常转换。
+1. **在有网络的环境产出并验证 NSIS 安装包**：跑 `npm run dist:nsis`，安装后确认 `resources/bin` 释放正确、能正常转换、
+   图标与版本信息正确写入。（便携版已在本机实测跑通，见"打包"一节；缺的是**安装包**这一步。）
 2. **补冒烟测试未覆盖的样本**：HDR 片源（`zscale`/`tonemap` 链一次都没执行过）、
    真正带旋转元数据的手机视频（现有样本的 `rotate=90` 未被这份 ffmpeg 保留，用例自跳过）、
    带字幕与多音轨的 MKV、以及**带片头黑场的视频**（证明缩略图真的会跳过黑帧）。
@@ -664,7 +752,7 @@ npm run fetch:electron
 
 ## 环境踩坑备忘（供后来者）
 
-这台机器上安装与构建过程中真实遇到的 8 个问题及处理方式，都已固化进仓库脚本：
+这台机器上安装与构建过程中真实遇到的 9 个问题及处理方式，都已固化进仓库脚本：
 
 | # | 现象 | 处理 |
 | --- | --- | --- |
@@ -676,9 +764,20 @@ npm run fetch:electron
 | 6 | PowerShell 的 `Set-Content` 默认编码把 `package.json` 里的中文写坏 | 一律用 UTF-8 写入工具编辑源文件 |
 | 7 | Electron 32+ 移除了 `File.path`，拖拽取不到路径 | 改用 `webUtils.getPathForFile`，且只在 `drop` 事件同步阶段调用（`preload.ts` 的 `pathsForFiles`） |
 | 8 | 打包后 asar 内的 `.exe` 无法执行 | 走 `extraResources` 释放到 `resources/bin`，代码里对应去 `process.resourcesPath` 找 |
+| 9 | `electron-builder --win nsis` 在受限网络下卡住并超时 | 它要在打包时现下 `app-builder-bin` / `nsis` / `winCodeSign`，报 `Timeout awaiting 'request' for 600000ms`；且它的 Electron 缓存与 `@electron/get` 不通用。改为 `scripts/package-portable.mjs` **离线手工组装便携版**（`npm run dist:portable`），只用本机已有的 `node_modules/electron/dist` 与 `resources/bin/` |
 
 另外 `scripts/fix-esbuild.mjs` 处理了一个容易误判的问题：esbuild 报 `Error: spawn EPERM` 看起来像沙箱/权限问题，
 实际常常是平台子包（`@esbuild/win32-x64`）的二进制没被复制到 `node_modules/esbuild/bin/`。该脚本会补齐二进制并生成 `node_modules/.bin` 垫片。
+
+还有一类坑**不是环境问题，而是 Electron API 的语义问题**，两条都真实踩过、都表现为
+`An object could not be cloned.`（错误信息不带任何位置信息，极易误判成"环境/脚本的毛病"）：
+
+| 位置 | 规则 |
+| --- | --- |
+| `ipcRenderer.invoke` 的参数 | 走**结构化克隆**，不能传 Vue 响应式代理、Promise、函数。跨 IPC 传参前必须先转成纯对象（本项目统一用 JSON 往返，见 `docs/DECISIONS.md` 的 D-016）。违反的后果不是报错弹窗，而是**调用静默失败** |
+| `executeJavaScript` 的返回值 | 同样走结构化克隆。被测表达式必须以基本类型收尾并包成 IIFE——写成 `void el.click(); true` 也不行，`void` 只丢弃值，DOM 节点仍会作为中间值被克隆 |
+
+完整根因与"为什么早期断言会假通过"见 `docs/SESSION_SUMMARY.md` 第 5.1.1 节。
 
 ---
 
@@ -686,4 +785,4 @@ npm run fetch:electron
 
 MIT © 2025 xiaomingliang
 
-（License 见 `package.json` 的 `license` 字段与安装包 `copyright` 信息；仓库当前尚未放置独立的 `LICENSE` 文件。）
+（License 见仓库根目录的 `LICENSE` 文件，与 `package.json` 的 `license` 字段一致。）

@@ -30,7 +30,8 @@
     "smoke:ui:full": "npm run build && electron . --smoke --smoke-file=test-assets/samples/sample-h264.mp4 --smoke-convert",
     "start": "npm run build && electron .",
     "dist": "npm run build && electron-builder --win",
-    "dist:portable": "npm run build && electron-builder --win portable"
+    "dist:portable": "node scripts/package-portable.mjs --build",
+    "dist:nsis": "npm run build && electron-builder --win nsis"
   },
   "dependencies": {},
   "devDependencies": {

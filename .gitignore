@@ -21,8 +21,9 @@ desktop.ini
 #   3) 一行命令就能按需获取：node scripts/fetch-binaries.mjs（走 npm 镜像 + GitHub 代理）
 #
 # 因此：克隆后请执行 `npm run setup`，它会自动把 ffmpeg/ffprobe 准备好。
-# 发布时若需要"开箱即用"的整包，请使用 npm run dist 产出的安装包，
-# 或把完整包作为 GitHub Release 附件上传（electron-builder 已配置 extraResources）。
+# 发布时若需要"开箱即用"的整包，用 `npm run dist:portable` 产出的离线便携版目录
+# （release/Lumen-conv-便携版/，不需要联网，只用本机已有的 electron/dist 与 resources/bin）；
+# 需要带图标的 NSIS 安装包时在有网络的环境跑 `npm run dist:nsis`（electron-builder 已配置 extraResources）。
 # ---------------------------------------------------------------------------
 resources/bin/
 .downloads/

@@ -1,0 +1,46 @@
+MIT License
+
+Copyright (c) 2025 xiaomingliang
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+---
+
+## 第三方组件说明（重要）
+
+本项目**源码**以 MIT 许可发布。但需要注意两点，因为 ffmpeg 的许可是有传染性的：
+
+| 组件 | 许可 | 说明 |
+|---|---|---|
+| FFmpeg / ffprobe | **GPL v3** | 本项目 `scripts/fetch-binaries.mjs` 默认下载 `ffmpeg-master-latest-win64-gpl` 构建。它**不随源码仓库分发**，但会被打进 `npm run dist:portable` 的产物 |
+| Electron | MIT | 运行时 |
+| Vue 3 | MIT | 渲染层框架 |
+| Vite / esbuild / TypeScript | MIT | 构建工具链 |
+
+**这意味着：**
+
+- 只分发**源码仓库**时，本项目的 MIT 许可是成立的（此时并未分发 ffmpeg 二进制）。
+- 分发**便携版/安装包**（内含 GPL 构建的 ffmpeg）时，整个分发物需要按 GPL v3 的条款处理，
+  并且应随包提供对应源码或获取途径。这一点在 README 的「已知限制」里也有记录。
+- 如果希望整个分发物保持 MIT 兼容，请把 `scripts/fetch-binaries.mjs` 中的 `BUILD_ZIP`
+  换成 LGPL 构建（yt-dlp/FFmpeg-Builds 提供 `ffmpeg-master-latest-win64-lgpl.zip`）。
+  **注意**：LGPL 构建不含 libx264 / libx265，H.264 与 H.265 软编码将不可用
+  （本项目已做运行期编码器探测，界面会如实显示"当前 ffmpeg 构建未包含该编码器"，
+  但用户可选的编码器会明显变少）。这个取舍需要在分发前想清楚。
+

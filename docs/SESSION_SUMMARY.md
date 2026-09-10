@@ -411,7 +411,7 @@ release/Lumen-conv-便携版/Lumen-conv.exe --smoke --smoke-file=<绝对路径> 
 | 7 | 设置页的路径与目录只能手输，没有「浏览」按钮 | 新增 `dialog:pick-executable` handler（`main.ts`）+ preload 的 `pickExecutable()`；`SettingsView.vue` 的 ffmpeg / ffprobe 路径输入框旁各有「浏览」按钮，默认输出目录有「选择目录 / 恢复默认」，缩略图缓存有「清理缓存」（走 `cache:clear-thumbnails` → `clearThumbnailCache()`） | 上述三处 handler 与按钮均在源码中；设置页实测渲染出 5 个 `.settings .card` 分组，自检要求 ≥ 3 即通过 |
 | 8 | **Vue 响应式代理导致 IPC 结构化克隆失败，「开始转换」按钮静默失效**（本轮新发现，最严重的一条） | `useStore.ts` 的 `effectiveOptions()` 由 `{ ...options.value, ...(file.overrides ?? {}) }` 改为 `JSON.parse(JSON.stringify(merged))`，把整个结构从响应式图上摘下来；`startConversion()` 用 `try/catch` 包住 `api.createJobs()`，失败时 `console.error` + `showToast('无法创建转换任务：' + msg, 'danger', 8000)`。**完整根因、影响面与复盘见 5.1.1** | 界面自检升到 `--smoke-convert` 一级并加严格断言后：`npm run smoke:ui:full` **31/31 通过、退出码 0**，控制台无任何 `An object could not be cloned.`；`test-assets\samples\sample-h264 (2).mp4` 706 KB 真实产出（见 `docs/screenshots/queue-done.png`） |
 | 9 | **打包态路径 bug：便携版上一启动自检就抛 `ENOTDIR, not a directory`**（真实踩坑，只有打包形态才暴露） | 自检的基准目录原来直接用 `app.getAppPath()`。开发态它确实是**项目根**，但在打包态它指向 `...\resources\app.asar` —— 那是一个**文件**，而代码拿它去 `mkdirSync(<base>/docs/screenshots)`，于是 `ENOTDIR`。修复：`electron/main.ts` 新增 `smokeBaseDir()`，`app.isPackaged` 为真时返回 `path.dirname(app.getPath('exe'))`（安装目录 / 便携版目录），否则返回 `app.getAppPath()`；**截图目录**与 `--smoke-file=` 的相对路径解析都改用它 | ① 便携版 `release/Lumen-conv-便携版/Lumen-conv.exe --smoke --smoke-file=… --smoke-convert` 实测 **31/31 通过、退出码 0**（修复前在该形态下无法启动自检）；② 开发态 `smoke:ui:*` 行为不变，仍 **31/31**；③ 便携版目录下**没有**出现 `docs/screenshots/`（截图按设计落在 exe 旁边，运行时可写） |
-| 10 | **同一次自检里截图互相覆盖：`queue.png` 与 `queue-done.png` 是同一张图** | 原来的顺序是"转换完成后先截 `queue-done.png`、再截 `queue.png`"，后者把第 1 步产出的**空队列**那张覆盖成同一张图（两个文件 sha256 完全相同），而文档仍宣称"`queue.png` 是空队列"。修复：用 `const ranConversion = process.argv.includes('--smoke-convert')` 判定，**跑过转换时不再写 `queue.png`**，仅在它不存在时 `console.warn` 提示"请先跑一次不带 `--smoke-convert` 的自检"；同时把正确的两步工作流写进 `main.ts` 的注释 | 重新生成后实测：`queue.png` **22,942 字节（22.4 KB）**、sha256 `fd116c832663…`（空队列）；`queue-done.png` **56,959 字节（55.6 KB）**、sha256 `0c8df4031c60…`（有任务）——**哈希不同**。两步命令：`npm run smoke:ui:file` → `npm run smoke:ui:full`。注：截图的字节数与哈希只对**当次运行**成立（窗口尺寸、主题、字体渲染差异都会改变 PNG 字节），文档记录它们是为证明"两张图确实不同"，不是固定契约 |
+| 10 | **同一次自检里截图互相覆盖：`queue.png` 与 `queue-done.png` 是同一张图** | 原来的顺序是"转换完成后先截 `queue-done.png`、再截 `queue.png`"，后者把第 1 步产出的**空队列**那张覆盖成同一张图（两个文件 sha256 完全相同），而文档仍宣称"`queue.png` 是空队列"。修复：用 `const ranConversion = process.argv.includes('--smoke-convert')` 判定，**跑过转换时不再写 `queue.png`**，仅在它不存在时 `console.warn` 提示"请先跑一次不带 `--smoke-convert` 的自检"；同时把正确的两步工作流写进 `main.ts` 的注释 | 重新生成后实测：`queue.png` **22,942 字节（22.4 KB，稳定）**（空队列）；`queue-done.png` **54–58 KB 波动**（有任务）——**哈希不同**。两步命令：`npm run smoke:ui:file` → `npm run smoke:ui:full`。注：`queue-done.png` 的字节数只对当次运行成立，因为任务卡片带「已用时」文本，截图瞬间的秒数不同就会改变 PNG 字节；`queue.png` 不含时间信息所以逐字节稳定。文档记录它们是为证明"两张图确实不同"，不是固定契约 |
 | 11 | 顺带修：「队列卡片显示完成与产物大小」这条此前**只打印不断言** | `main.ts` 里该检查项由"只采集并打印"改为真断言：`queueReport.state.includes('已完成') && /\d/.test(queueReport.outSize) && queueReport.hasOpenBtn`，即**状态芯片含「已完成」+ 产物大小含数字 + 卡片上存在「打开位置」按钮**三者同时成立才通过 | 同一处 `extraChecks` 的判定表达式；实测输出「已完成」/ 产物 706 KB / 有打开按钮，31 项断言全绿 |
 
 另外三项原属"与任务描述不一致"的问题也已消解：
@@ -594,7 +594,8 @@ extraChecks.push(['应用内转换：按钮点击真的创建了任务', enqueue
 - **截图的一个曾经容易误解之处（已修复）**：`queue.png` 与 `queue-done.png` 一度是**同一张图**（sha256 相同）——
   `smoke:ui:full` 在转换完成后再截一次 `queue.png`，把前一步产出的空队列那张覆盖掉了。
   现在 `main.ts` 用 `ranConversion` 判定：**跑过转换就不再写 `queue.png`**，只在它不存在时提示。
-  实测两者已**哈希不同**（`fd116c83…` 空队列 / `0c8df403…` 有任务）。
+  实测两者已**哈希不同**（`queue.png` 空队列稳定在 22,942 字节 / `queue-done.png` 有任务，54–58 KB 波动，
+  因为它含「已用时」文本）。
   正确的两步工作流是 `npm run smoke:ui:file`（出空队列 `queue.png`）→ `npm run smoke:ui:full`（只加 `queue-done.png`）。
   详见 `docs/screenshots/README.md`。
 

@@ -348,10 +348,10 @@ const evalJs = async <T>(label: string, expression: string): Promise<T> => {
 | 1 | `npm run smoke:ui:file`（或 `--smoke --smoke-file=…`，**不带** `--smoke-convert`） | `main.png`、`main-with-file.png`、**`queue.png`（空队列）**、`settings.png` |
 | 2 | `npm run smoke:ui:full`（带 `--smoke-convert`） | 只新增 `queue-done.png`，**不动 `queue.png`** |
 
-实测两个文件已**哈希不同**：`queue.png` 22,942 字节（`fd116c83…`，空队列）/
-`queue-done.png` 56,959 字节（`0c8df403…`，有任务）。
-> 这类"截图字节数/哈希"只对**当次运行**成立：窗口尺寸、主题、系统字体渲染的细微差异都会
-> 改变 PNG 字节。文档里记它们是为了证明"两张图确实不同"，而不是把它们当成固定契约。
+实测两个文件已**哈希不同**：`queue.png`（空队列）与 `queue-done.png`（有任务）。
+> 这类"截图字节数/哈希"只对**当次运行**成立：`queue-done.png` 里任务卡片带「已用时」，
+> 截图瞬间的秒数不同就会让 PNG 在 54–58 KB 之间波动。文档记录它们只为证明"两张图确实不同"，
+> 不是固定契约（`queue.png` 因为不含时间信息，倒是一直稳定在 22,942 字节）。
 与 ③ 一样，这条约定针对的是同一类错误：**断言/产物被"另一条路径"满足**，看上去成功，实际什么都没证明。
 
 > 测试跑的是产品代码本身，而不是另写一份等价实现 —— 否则"测过了"没有说服力。

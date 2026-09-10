@@ -161,6 +161,20 @@ async function runSmokeCheck(): Promise<void> {
   const fs = await import('node:fs');
   fs.mkdirSync(outDir, { recursive: true });
 
+  /*
+   * 自检要求队列为空。
+   *
+   * 遗留任务已在 `app.whenReady()` 里、**创建窗口之前**清掉了（那里才是正确位置：
+   * 放到窗口加载后清会与渲染进程 initStore() 构成竞态，实测 3 次有 1 次读到旧列表）。
+   * 这里只做校验与提示，不再执行清理。
+   */
+  const residualJobs = engine.list();
+  if (residualJobs.length > 0) {
+    console.warn(
+      `[smoke] ⚠ 队列里仍有 ${residualJobs.length} 个任务，空队列相关断言可能不成立`,
+    );
+  }
+
   // 等待界面骨架挂载 + store 数据加载完成。
   // 只看 DOM 元素是否存在是不够的：设置页依赖 settings 数据，
   // 数据未就绪时 v-if 会让整块内容不渲染，截出来是一张空白页。
@@ -805,6 +819,20 @@ app.whenReady().then(async () => {
   engine.setFfmpegPath(ffmpegPath);
   engine.setFfprobePath(ffprobePath);
   engine.setConcurrency(settings.concurrency);
+
+  // 先清掉上次自检遗留的任务，再创建窗口。
+  //
+  // 位置很关键：这个清理必须在 createWindow() **之前**完成。
+  // 早期实现放在窗口加载后清，与渲染进程 initStore() 读列表构成竞态 ——
+  // 实测 3 次里有 1 次会读到旧列表，导致「空队列」断言时灵时不灵（20/21）。
+  // 放在窗口创建前，渲染层首次拿到的就已经是空列表，不存在竞态。
+  if (isSmokeMode) {
+    const staleJobs = engine.list();
+    if (staleJobs.length > 0) {
+      for (const j of staleJobs) await engine.remove(j.id);
+      console.log(`[smoke] 已清理 ${staleJobs.length} 个上次运行遗留的任务，保证自检从干净队列开始`);
+    }
+  }
 
   registerIpc();
   wireEngineEvents();

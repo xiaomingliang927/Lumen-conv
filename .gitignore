@@ -1,0 +1,34 @@
+node_modules/
+dist/
+dist-electron/
+release/
+.npm-cache/
+*.log
+npm-debug.log*
+.vite/
+.eslintcache
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ---------------------------------------------------------------------------
+# 二进制的取舍（重要）
+#
+# resources/bin/ 下的 ffmpeg.exe + ffprobe.exe 合计约 140 MB，.downloads/ 里的
+# 中间产物约 190 MB。这些都不入库，原因：
+#   1) GitHub 单文件 100 MB 硬限制、仓库 1 GB 软限制，塞进去会把仓库撑爆
+#   2) 二进制不适合走 git 的差分存储，每次替换都会让仓库历史翻倍
+#   3) 一行命令就能按需获取：node scripts/fetch-binaries.mjs（走 npm 镜像 + GitHub 代理）
+#
+# 因此：克隆后请执行 `npm run setup`，它会自动把 ffmpeg/ffprobe 准备好。
+# 发布时若需要"开箱即用"的整包，请使用 npm run dist 产出的安装包，
+# 或把完整包作为 GitHub Release 附件上传（electron-builder 已配置 extraResources）。
+# ---------------------------------------------------------------------------
+resources/bin/
+.downloads/
+
+# 测试产物（样本视频由测试脚本用 lavfi 现场合成，无需入库）
+test-assets/output/
+test-assets/samples/
+*.tmp
+*.part

@@ -1,0 +1,395 @@
+/**
+ * 主进程 / 预加载 / 渲染进程共享的类型契约。
+ * 这里只放「数据结构」，不放实现，保证三方引用同一份定义。
+ */
+
+/* ------------------------------------------------------------------ *
+ * 视频信息探测（ffprobe）
+ * ------------------------------------------------------------------ */
+
+export interface VideoStreamInfo {
+  index: number;
+  codec: string;
+  codecLongName: string;
+  profile: string;
+  width: number;
+  height: number;
+  /** 显示宽高（已按 sample_aspect_ratio 与旋转角校正，macroblocks 之外的直觉值） */
+  displayWidth: number;
+  displayHeight: number;
+  /** 0 / 90 / 180 / 270 */
+  rotation: number;
+  fps: number;
+  /** 平均帧率，VFR 视频下比 r_frame_rate 更可信 */
+  avgFps: number;
+  bitrateKbps: number | null;
+  pixFmt: string;
+  bitDepth: number;
+  colorTransfer: string | null;
+  /** 形如 smpte2084 / arib-std-b67 视为 HDR */
+  isHdr: boolean;
+  isAttachedPic: boolean;
+  durationSec: number | null;
+  language: string | null;
+  title: string | null;
+}
+
+export interface AudioStreamInfo {
+  index: number;
+  codec: string;
+  codecLongName: string;
+  profile: string;
+  channels: number;
+  channelLayout: string;
+  sampleRate: number;
+  bitrateKbps: number | null;
+  language: string | null;
+  title: string | null;
+  isDefault: boolean;
+}
+
+export interface SubtitleStreamInfo {
+  index: number;
+  codec: string;
+  language: string | null;
+  title: string | null;
+  isDefault: boolean;
+  isForced: boolean;
+  /** 文本字幕（可转软字幕） vs 图形字幕（PGS/VobSub，只能 copy 或烧录） */
+  isTextBased: boolean;
+}
+
+export interface ChapterInfo {
+  index: number;
+  startSec: number;
+  endSec: number;
+  title: string | null;
+}
+
+export interface MediaProbeResult {
+  /** 源文件绝对路径 */
+  path: string;
+  fileName: string;
+  /** 容器格式，如 mov,mp4,m4a,3gp,3g2,mj2 */
+  formatName: string;
+  /** 人类可读容器名，如 MP4 / Matroska */
+  formatLongName: string;
+  /** 扩展名推导出的容器名，探测失败时兜底展示 */
+  extension: string;
+  durationSec: number;
+  sizeBytes: number;
+  /** 整体码率 kbps */
+  bitrateKbps: number | null;
+  /** 流数量为 0（如封面图 mp3 的极端情况）时为 true */
+  hasVideo: boolean;
+  hasAudio: boolean;
+  hasSubtitle: boolean;
+  video: VideoStreamInfo[];
+  audio: AudioStreamInfo[];
+  subtitle: SubtitleStreamInfo[];
+  chapters: ChapterInfo[];
+  /** 容器级元数据（title / artist / encoder …） */
+  tags: Record<string, string>;
+  /** 缩略图抽帧推荐时间点（秒），避开片头黑帧 */
+  thumbnailAtSec: number;
+}
+
+/* ------------------------------------------------------------------ *
+ * 缩略图
+ * ------------------------------------------------------------------ */
+
+export interface ThumbnailResult {
+  sourcePath: string;
+  /** 成功时是本地缓存文件路径；失败为 null */
+  filePath: string | null;
+  /** 实际抽帧时间点 */
+  atSec: number;
+  width: number | null;
+  height: number | null;
+  /** 失败原因（人类可读，供 UI 直接展示） */
+  error: string | null;
+  /** 是否来自缓存 */
+  cached: boolean;
+}
+
+/* ------------------------------------------------------------------ *
+ * 转换
+ * ------------------------------------------------------------------ */
+
+export type JobState =
+  | 'queued'
+  | 'probing'
+  | 'running'
+  | 'done'
+  | 'failed'
+  | 'canceled';
+
+export interface ConversionProgress {
+  /** 0 - 100，未知总时长时为 null（UI 显示不确定进度条） */
+  percent: number | null;
+  /** 已处理秒数 */
+  processedSec: number;
+  /** 已处理时长的文本形式，如 00:01:23 */
+  processedText: string;
+  /** 剩余秒数估算，null 表示暂不可估算 */
+  etaSec: number | null;
+  /** ffmpeg 上报的实时速度倍率，如 2.35 表示 2.35x */
+  speed: number | null;
+  /** 当前帧号 */
+  frame: number | null;
+  /** 已编码输出的字节数 */
+  outBytes: number | null;
+  /** 原始 -progress 键值对（用于「专家模式」展示与排错） */
+  raw: Record<string, string>;
+}
+
+export interface JobError {
+  /** 面向人类的一句话说明 */
+  message: string;
+  /** 归类，UI 据此给建议 */
+  kind:
+    | 'ffmpeg-missing'
+    | 'unsupported-codec'
+    | 'invalid-input'
+    | 'disk-full'
+    | 'permission'
+    | 'canceled'
+    | 'unknown';
+  /** ffmpeg stderr 尾部原文，供折叠查看 / 复制 */
+  rawLog: string;
+  /** 针对性的修复建议 */
+  hint: string | null;
+}
+
+export interface MediaJob {
+  id: string;
+  sourcePath: string;
+  sourceName: string;
+  outputPath: string;
+  /** 源文件大小，用于显示压缩比 */
+  sourceSizeBytes: number;
+  sourceDurationSec: number;
+  presetId: string;
+  presetLabel: string;
+  /** 将要执行的完整 ffmpeg 命令行（专家模式展示，也方便出问题自查） */
+  command: string;
+  state: JobState;
+  progress: ConversionProgress | null;
+  error: JobError | null;
+  createdAt: number;
+  startedAt: number | null;
+  finishedAt: number | null;
+  /** 完成后产物的实际大小 */
+  outputSizeBytes: number | null;
+  createdAtLabel: string;
+}
+
+/* ------------------------------------------------------------------ *
+ * 转换预设
+ * ------------------------------------------------------------------ */
+
+export type TargetContainer = 'mp4' | 'mkv' | 'webm' | 'gif' | 'mp3' | 'm4a' | 'copy';
+
+export interface QualityPreset {
+  id: string;
+  label: string;
+  /** 一句话说明，展示在 UI 上帮用户做选择 */
+  description: string;
+}
+
+export interface VideoCodecOption {
+  id: string;
+  label: string;
+  description: string;
+  /** 该编码器可用的输出容器 */
+  containers: TargetContainer[];
+  /** 是否为硬件编码器（需运行时探测可用性） */
+  hardware: boolean;
+  /** 编码器不接受 CRF 而是用 -b:v 时，用码率档位控制质量 */
+  usesBitrate: boolean;
+}
+
+export interface ConversionPreset {
+  id: string;
+  /** 分组：常用 / 压缩 / 音频 / 高级 */
+  group: 'common' | 'compress' | 'audio' | 'advanced';
+  label: string;
+  description: string;
+  container: TargetContainer;
+  /** 视频编码器 id（copy 容器或纯音频预设为 null） */
+  videoCodecId: string | null;
+  /** 音频编码器 id（'none' 表示丢弃音轨） */
+  audioCodecId: string;
+  /** 默认质量档位 id */
+  qualityId: string;
+  /** 默认分辨率档位 id */
+  resolutionId: string;
+  /** 备注，展示在 UI 的提示条上 */
+  tip: string | null;
+}
+
+/* ------------------------------------------------------------------ *
+ * 编码器可用性探测
+ * ------------------------------------------------------------------ */
+
+export interface EncoderAvailability {
+  id: string;
+  label: string;
+  kind: 'software' | 'nvidia' | 'intel' | 'amd';
+  available: boolean;
+  /** 不可用原因，如「未检测到 NVIDIA 显卡」 */
+  reason: string | null;
+}
+
+export interface SystemCapabilities {
+  ffmpegPath: string | null;
+  ffprobePath: string | null;
+  ffmpegVersion: string | null;
+  /** ffmpeg 构建配置里是否含 --enable-libx264 等 */
+  encoders: EncoderAvailability[];
+  /** 探测时间戳 */
+  probedAt: number;
+  /** 二进制是否就绪；false 时 UI 显示引导 */
+  ready: boolean;
+  /** 整体诊断信息 */
+  diagnostics: string[];
+}
+
+/* ------------------------------------------------------------------ *
+ * 任务创建请求
+ * ------------------------------------------------------------------ */
+
+export interface ConversionOptions {
+  presetId: string;
+  videoCodecId: string;
+  audioCodecId: string;
+  qualityId: string;
+  resolutionId: string;
+  fpsId: string;
+  /** 输出目录；null 表示与源文件同目录 */
+  outputDir: string | null;
+  /** 文件名模板，支持 {name} {preset} {date} {index} */
+  fileNameTemplate: string;
+  /** 覆盖已存在文件 */
+  overwrite: boolean;
+  /** 保留元数据（-map_metadata 0） */
+  keepMetadata: boolean;
+  /** 起始时间（秒），用于裁剪，null 为从头 */
+  trimStartSec: number | null;
+  /** 结束时间（秒），null 为到结尾 */
+  trimEndSec: number | null;
+  /** 保留的字幕流 index 列表（空数组表示不保留） */
+  subtitleStreamIndexes: number[];
+  /** 保留的音轨 index 列表（空数组表示使用默认音轨） */
+  audioStreamIndexes: number[];
+}
+
+export interface CreateJobRequest {
+  sourcePath: string;
+  options: ConversionOptions;
+}
+
+export interface CreateJobResult {
+  job: MediaJob | null;
+  error: string | null;
+}
+
+/* ------------------------------------------------------------------ *
+ * 应用设置
+ * ------------------------------------------------------------------ */
+
+export interface AppSettings {
+  /** 自定义 ffmpeg 路径；null 表示使用内置二进制 */
+  ffmpegPath: string | null;
+  ffprobePath: string | null;
+  /** 并发转换数 */
+  concurrency: number;
+  /** 默认输出目录；null 表示与源文件同目录 */
+  defaultOutputDir: string | null;
+  /** 主题 */
+  theme: 'system' | 'light' | 'dark';
+  /** 转换完成后系统通知 */
+  notifyOnFinish: boolean;
+  /** 完成后打开输出目录 */
+  openFolderOnFinish: boolean;
+}
+
+export const DEFAULT_SETTINGS: AppSettings = {
+  ffmpegPath: null,
+  ffprobePath: null,
+  concurrency: 2,
+  defaultOutputDir: null,
+  theme: 'system',
+  notifyOnFinish: true,
+  openFolderOnFinish: false,
+};
+
+/* ------------------------------------------------------------------ *
+ * IPC 事件
+ * ------------------------------------------------------------------ */
+
+export interface IpcEvents {
+  'job:updated': MediaJob;
+  'job:log': { jobId: string; line: string };
+  'capabilities:updated': SystemCapabilities;
+}
+
+export interface FfmpegDetectResult {
+  ok: boolean;
+  version: string | null;
+  message: string;
+  path: string | null;
+}
+
+/** 统一的 IPC 响应包装，避免异常跨进程丢失堆栈 */
+export type IpcResponse<T> = { ok: true; data: T } | { ok: false; error: string };
+
+/** preload 暴露到 window.converter 的 API 面 */
+export interface ConverterApi {
+  /* 探测与能力 */
+  probe(path: string): Promise<IpcResponse<MediaProbeResult>>;
+  pickVideoFiles(): Promise<string[]>;
+  pickOutputDir(): Promise<string | null>;
+  /** 选择一个 .exe（用于手动指定 ffmpeg / ffprobe 路径） */
+  pickExecutable(): Promise<string | null>;
+  /** 清理缩略图缓存，返回释放的字节数 */
+  clearThumbnailCache(): Promise<IpcResponse<number>>;
+  revealInFolder(path: string): Promise<void>;
+  /**
+   * 取拖拽文件在磁盘上的真实路径。
+   * Electron 32 起 File.path 已被移除，必须走 webUtils.getPathForFile，
+   * 且只能在 drop 事件同步阶段调用（DataTransfer 之后会被回收）。
+   */
+  pathsForFiles(files: File[]): string[];
+  thumbnail(path: string, atSec?: number): Promise<IpcResponse<ThumbnailResult>>;
+  getCapabilities(forceRefresh?: boolean): Promise<IpcResponse<SystemCapabilities>>;
+  detectFfmpeg(): Promise<IpcResponse<FfmpegDetectResult>>;
+
+  /* 设置 */
+  getSettings(): Promise<IpcResponse<AppSettings>>;
+  saveSettings(patch: Partial<AppSettings>): Promise<IpcResponse<AppSettings>>;
+  resetSettings(): Promise<IpcResponse<AppSettings>>;
+
+  /* 任务 */
+  createJobs(requests: CreateJobRequest[]): Promise<IpcResponse<CreateJobResult[]>>;
+  listJobs(): Promise<IpcResponse<MediaJob[]>>;
+  cancelJob(jobId: string): Promise<IpcResponse<boolean>>;
+  cancelAllJobs(): Promise<IpcResponse<number>>;
+  retryJob(jobId: string): Promise<IpcResponse<MediaJob | null>>;
+  removeJob(jobId: string): Promise<IpcResponse<boolean>>;
+  clearFinished(): Promise<IpcResponse<number>>;
+  openOutput(jobId: string): Promise<IpcResponse<boolean>>;
+
+  /* 预设目录（静态，随应用分发） */
+  getPresets(): Promise<IpcResponse<unknown>>;
+
+  /* 窗口控制（自绘标题栏） */
+  windowMinimize(): void;
+  windowMaximize(): Promise<boolean>;
+  windowClose(): void;
+
+  /* 事件订阅，返回取消订阅函数 */
+  onJobUpdated(cb: (job: MediaJob) => void): () => void;
+  onJobLog(cb: (payload: { jobId: string; line: string }) => void): () => void;
+  onCapabilitiesUpdated(cb: (caps: SystemCapabilities) => void): () => void;
+}

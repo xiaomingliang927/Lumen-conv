@@ -1,0 +1,18 @@
+# 统一行尾为 LF，避免 Windows 上 clone 后出现满屏 "LF will be replaced by CRLF" 警告，
+# 也避免同一文件在不同机器上产生无意义的整文件 diff。
+* text=auto eol=lf
+
+# 二进制资源不做行尾转换
+*.png binary
+*.jpg binary
+*.ico binary
+*.exe binary
+*.zip binary
+
+# Windows 专用脚本保留 CRLF（.bat/.cmd/.ps1 对行尾敏感）
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
+
+# 让 git 在 diff 时把锁文件当二进制，避免巨大的无意义 diff
+package-lock.json -diff linguist-generated=true

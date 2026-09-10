@@ -1,0 +1,99 @@
+{
+  "name": "lumen-conv",
+  "productName": "Lumen-conv 视频格式转换器",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Lumen-conv：基于 Electron + Vue 3 + ffmpeg CLI 的桌面视频格式转换器，支持视频信息探测、智能缩略图、批量转换与实时进度",
+  "author": {
+    "name": "xiaomingliang",
+    "email": "3176108538@qq.com"
+  },
+  "license": "MIT",
+  "main": "dist-electron/main.js",
+  "scripts": {
+    "setup": "node scripts/install.mjs",
+    "fetch:binaries": "node scripts/fetch-binaries.mjs",
+    "fetch:electron": "node scripts/fetch-binaries.mjs --electron",
+    "make:icon": "node scripts/make-icon.mjs",
+    "fix:esbuild": "node scripts/fix-esbuild.mjs",
+    "dev": "concurrently -k -n renderer,electron -c cyan,magenta \"npm:dev:renderer\" \"npm:dev:electron\"",
+    "dev:renderer": "vite",
+    "dev:electron": "node scripts/dev-electron.mjs",
+    "build": "npm run build:renderer && npm run build:electron",
+    "build:renderer": "vite build",
+    "build:electron": "node scripts/build-electron.mjs",
+    "typecheck": "vue-tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.electron.json",
+    "postinstall": "node scripts/verify-binaries.mjs",
+    "smoke": "node scripts/smoke-test.mjs",
+    "smoke:ui": "npm run build && electron . --smoke",
+    "smoke:ui:file": "npm run build && electron . --smoke --smoke-file=test-assets/samples/sample-h264.mp4",
+    "smoke:ui:full": "npm run build && electron . --smoke --smoke-file=test-assets/samples/sample-h264.mp4 --smoke-convert",
+    "start": "npm run build && electron .",
+    "dist": "npm run build && electron-builder --win",
+    "dist:portable": "npm run build && electron-builder --win portable"
+  },
+  "dependencies": {},
+  "devDependencies": {
+    "@types/node": "^22.20.2",
+    "@vitejs/plugin-vue": "^6.0.8",
+    "concurrently": "^10.0.5",
+    "electron": "^38.8.6",
+    "electron-builder": "^26.15.3",
+    "esbuild": "^0.28.2",
+    "typescript": "^5.9.3",
+    "vite": "^7.3.6",
+    "vue": "^3.5.42",
+    "vue-tsc": "^3.3.11"
+  },
+  "build": {
+    "appId": "com.xiaomingliang.lumenconv",
+    "productName": "Lumen-conv",
+    "copyright": "Copyright © 2025 xiaomingliang",
+    "directories": {
+      "output": "release",
+      "buildResources": "build"
+    },
+    "files": [
+      "dist/**/*",
+      "dist-electron/**/*",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "resources/bin/ffmpeg.exe",
+        "to": "bin/ffmpeg.exe"
+      },
+      {
+        "from": "resources/bin/ffprobe.exe",
+        "to": "bin/ffprobe.exe"
+      }
+    ],
+    "asarUnpack": [
+      "**/*.exe"
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "build/icon.ico",
+      "artifactName": "${productName}-${version}-setup.${ext}"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "Lumen-conv 视频格式转换器",
+      "artifactName": "${productName}-${version}-setup.${ext}"
+    },
+    "portable": {
+      "artifactName": "${productName}-${version}-portable.${ext}"
+    }
+  }
+}

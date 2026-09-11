@@ -224,10 +224,10 @@ npm run smoke:ui:full  # 再额外在应用内真的点一次「开始转换」�
 | **`npm run typecheck` 通过** | 退出码 **0，零错误**（`vue-tsc --noEmit -p tsconfig.json` 检查渲染层 + shared，`tsc --noEmit -p tsconfig.electron.json` 检查主进程 + shared） |
 | 渲染层构建成功 | `vite build`：34 个模块，`dist/index.html` 0.80 kB、`index-*.css` 25.28 kB、`index-*.js` 55.98 kB、`vendor-*.js` 70.53 kB |
 | 主进程构建成功 | `esbuild`：`dist-electron/main.js` 69.6 kB、`dist-electron/preload.js` 1.7 kB |
-| **桌面应用已真正启动** | `npm run smoke:ui:full` 启动真实 Electron 窗口、加载真实视频、逐页截图、**在应用内真的点一次「开始转换」并等任务跑到终态**，**74/74 通过、退出码 0**，产出 9 张 PNG（见 4.1） |
-| **便携版打包已产出并实机验证** | `npm run dist:portable`（`node scripts/package-portable.mjs --build`）**完全离线**产出 `release/Lumen-conv-便携版/`：`Lumen-conv.exe` **200.4 MB**（210,149,888 字节）、目录总计 **602.4 MB**；`release/` 已被 `.gitignore` 排除（`git check-ignore -v release/` 命中第 4 行）。产物**实跑全套界面自检 74/74 通过、退出码 0**（含应用内真实转换：状态 `done`、产物 3.15 MB、进度 100%），详见 4.1.1 |
+| **桌面应用已真正启动** | `npm run smoke:ui:full` 启动真实 Electron 窗口、加载真实视频、逐页截图、**在应用内真的点一次「开始转换」并等任务跑到终态**，**81/81 通过、退出码 0**，产出 9 张 PNG（见 4.1） |
+| **便携版打包已产出并实机验证** | `npm run dist:portable`（`node scripts/package-portable.mjs --build`）**完全离线**产出 `release/Lumen-conv-便携版/`：`Lumen-conv.exe` **200.4 MB**（210,149,888 字节）、目录总计 **602.4 MB**；`release/` 已被 `.gitignore` 排除（`git check-ignore -v release/` 命中第 4 行）。产物**实跑全套界面自检 81/81 通过、退出码 0**（含应用内真实转换：状态 `done`、产物 3.15 MB、进度 100%），详见 4.1.1 |
 
-#### 4.1.1 便携版（打包态）自检：`release/Lumen-conv-便携版/Lumen-conv.exe` **74/74 通过、退出码 0**
+#### 4.1.1 便携版（打包态）自检：`release/Lumen-conv-便携版/Lumen-conv.exe` **81/81 通过、退出码 0**
 
 这是本轮新增的一层验证——**同一个自检程序，换成打包后的形态再跑一遍**：
 
@@ -240,7 +240,7 @@ release/Lumen-conv-便携版/Lumen-conv.exe --smoke \
 | --- | --- |
 | 产物 | `release/Lumen-conv-便携版/Lumen-conv.exe` **200.4 MB**（210,149,888 字节）；目录总计 **602.4 MB** |
 | 目录构成 | Electron 运行时（`*.dll` / `*.pak` / `locales/` 等，已排除 `default_app.asar`）+ `resources/app.asar` 231,086 字节 + `resources/bin/ffmpeg.exe` 145,876,992 字节 + `resources/bin/ffprobe.exe` 145,665,024 字节 |
-| 自检结果 | **74/74 通过、退出码 0**，其中包含应用内真实转换：任务状态 `done`、产物 **3.15 MB**、进度 `percent=100` |
+| 自检结果 | **81/81 通过、退出码 0**，其中包含应用内真实转换：任务状态 `done`、产物 **3.15 MB**、进度 `percent=100` |
 | 内置 ffmpeg | 便携版内 `resources/bin/ffmpeg.exe -version` 实测 `ffmpeg version N-126435-gf93cd72dde-20260906`，与开发态所用构建一致 |
 | 二进制查找 | `resources/bin` 在开发态与打包态**路径约定一致**，因此 `binaries.ts` 无需任何分支（见 `docs/CORE_IMPLEMENTATION.md`） |
 | 图标 / 版本信息 | **未写入**（实测 `Lumen-conv.exe` 的版本信息仍是 Electron 原值：`ProductName=Electron`、`OriginalFilename=electron.exe`）。原因见 4.2 与 4.3 |
@@ -251,13 +251,13 @@ release/Lumen-conv-便携版/Lumen-conv.exe --smoke \
 1. 第一次：自检代码拿它当目录 `mkdirSync()`，便携版上直接抛 `ENOTDIR`（修复见 5.1 第 9 条）；
 2. 第二次（本轮核对覆盖范围时才发现）：加载第二个样本的路径也用了它，于是
    **8 项多文件检查在打包态一次都没跑过**，摘要却照样打印"58/58 通过"——
-   而文档一直宣称打包态与开发态"完全相同"。修复后打包态也是 **74/74**（见 5.1 第 14 条）。
+   而文档一直宣称打包态与开发态"完全相同"。修复后打包态也是 **81/81**（见 5.1 第 14 条）。
 
 > ⚠️ 打包态要带 `--smoke-assets=<仓库 test-assets 目录>`：便携版旁边**没有**测试素材
 > （26 MB 的测试数据不该塞进分发包）。不传这个参数时，那 8 项检查**会明确报一条失败**，
 > 而不是静默少跑。
 
-#### 端到端冒烟测试：`npm run smoke` **60 项通过 / 0 失败**
+#### 端到端冒烟测试：`npm run smoke` **77 项通过 / 0 失败**
 
 冒烟测试不启动界面，而是用 esbuild 把 `electron/ffmpeg/` 下的产品模块打包成 ESM、
 把 `electron` 指向测试桩（`scripts/test-stubs/electron.mjs`）后**直接调用与主进程相同的代码**，
@@ -279,7 +279,7 @@ release/Lumen-conv-便携版/Lumen-conv.exe --smoke \
 
 > 逐条用例清单与判定条件见 `docs/TEST_CASES.md` 的 A 部分。
 
-#### 界面自检：三级命令，最高一级 `npm run smoke:ui:full` **74/74 全部通过**
+#### 界面自检：三级命令，最高一级 `npm run smoke:ui:full` **81/81 全部通过**
 
 启动真实 Electron 窗口，等待 `data-store-ready`，通过 `window.__lumenAddFiles()`
 （内部就是拖拽用的同一个 `addFiles`）加载 `test-assets/samples/sample-h264.mp4`，逐页断言并截图。
@@ -289,8 +289,8 @@ release/Lumen-conv-便携版/Lumen-conv.exe --smoke \
 | 命令 | 追加的动作 | 检查项 |
 | --- | --- | --- |
 | `npm run smoke:ui` | 启动窗口 → 等 `data-store-ready` → 逐页切换截图 | **14 项** |
-| `npm run smoke:ui:file` | 加 `--smoke-file=…`，加载真实视频后再断言信息面板与缩略图 | **62 项** |
-| `npm run smoke:ui:full` | 加 `--smoke-convert`，在应用内真的点一次「开始转换」并等任务跑到终态 | **74 项** |
+| `npm run smoke:ui:file` | 加 `--smoke-file=…`，加载真实视频后再断言信息面板与缩略图 | **66 项** |
+| `npm run smoke:ui:full` | 加 `--smoke-convert`，在应用内真的点一次「开始转换」并等任务跑到终态 | **81 项** |
 
 `smoke:ui:file` 一级（62 项）的断言与实测结果：
 
@@ -317,7 +317,7 @@ release/Lumen-conv-便携版/Lumen-conv.exe --smoke \
 | 应用内转换：队列页截图已生成 | `queue-done.png` |
 | 应用内转换：队列卡片显示完成与产物大小 | 断言 `job-card` 的状态芯片文本含「已完成」；同一行明细里还打印采集到的产物大小与是否有「打开位置」按钮（明细为「已完成」，产物 3.15 MB，有打开按钮——**注意这两项目前只打印、未单独断言**） |
 
-**结果：74/74 通过，退出码 0，且控制台不再出现任何 `An object could not be cloned.` 错误**
+**结果：81/81 通过，退出码 0，且控制台不再出现任何 `An object could not be cloned.` 错误**
 （这条错误是本轮修复的克隆缺陷的标志，见 5.1.1）。
 
 #### ffmpeg 构建能力已核对
@@ -339,7 +339,7 @@ release/Lumen-conv-便携版/Lumen-conv.exe --smoke \
 
 | 未验证项 | 现状与原因 |
 | --- | --- |
-| **NSIS 安装包没有产出** | `npm run dist:nsis`（`electron-builder --win nsis`）在本机**做不出来**：需要额外工具链（`app-builder-bin` / `nsis` / `winCodeSign`）与一份与 `@electron/get` **不通用**的 Electron 缓存，受限网络下两次实测都卡在同一处以 `Timeout awaiting 'request' for 600000ms` 失败（详见 4.3）。所以"安装后 `extraResources` 能把 ffmpeg/ffprobe 释放到 `resources/bin` 且能执行"这条**在安装包形态下仍未验证**；**便携版形态下已验证**（`resources/bin` 就是在那个位置，74/74 通过） |
+| **NSIS 安装包没有产出** | `npm run dist:nsis`（`electron-builder --win nsis`）在本机**做不出来**：需要额外工具链（`app-builder-bin` / `nsis` / `winCodeSign`）与一份与 `@electron/get` **不通用**的 Electron 缓存，受限网络下两次实测都卡在同一处以 `Timeout awaiting 'request' for 600000ms` 失败（详见 4.3）。所以"安装后 `extraResources` 能把 ffmpeg/ffprobe 释放到 `resources/bin` 且能执行"这条**在安装包形态下仍未验证**；**便携版形态下已验证**（`resources/bin` 就是在那个位置，81/81 通过） |
 | **便携版 exe 没有图标与版本信息** | `package-portable.mjs` 会调用 `electron-winstaller` 附带的 `rcedit.exe` 写图标与版本信息，但该版本 rcedit 在**路径含非 ASCII 字符**时（本项目路径含中文）报 `Fatal error: Unable to load file`，脚本如实跳过。实测 `Lumen-conv.exe` 的版本信息仍为 Electron 原值。**脚本刻意不做环境相关绕行**（例如复制到临时 ASCII 路径再改回），需要带图标的正式安装包时应在有网络的环境跑 `npm run dist:nsis` |
 | ~~旋转自动转正~~ | **已补齐并修掉一个真 bug**。原来这条是"未验证"：合成素材的 `rotate=90` 在新版 ffmpeg 下不再被保留，用例静默走"跳过"分支（**假通过**）。现在用 `-display_rotation 90` 造出真正带显示矩阵的 `rot90.mp4`，验证中**发现旧实现手动 `transpose` 会导致转两次互相抵消**（产物 720×1280 而非 1280×720）。已改为交由 ffmpeg 自动转正，并有真实转码用例 + 防回归断言。详见 `docs/TEST_CASES.md` A9 |
 | HDR 色调映射 | 没有 HDR 样本，`zscale`/`tonemap` 滤镜链一次都没执行过 |
@@ -349,7 +349,7 @@ release/Lumen-conv-便携版/Lumen-conv.exe --smoke \
 | GitHub 推送 | 见下节"交付状态" |
 
 > 本轮状态变化：
-> ① 原先列在本表的 **`--smoke-convert`（应用内真跑转换）已移出**——`npm run smoke:ui:full` 实测 **74/74 通过、退出码 0**（含"按钮点击真的创建了任务"这条严格断言），证据见 4.1 与 `docs/screenshots/queue-done.png`。
+> ① 原先列在本表的 **`--smoke-convert`（应用内真跑转换）已移出**——`npm run smoke:ui:full` 实测 **81/81 通过、退出码 0**（含"按钮点击真的创建了任务"这条严格断言），证据见 4.1 与 `docs/screenshots/queue-done.png`。
 > ② 原先列在本表的 **"安装包 / portable 从未产出"已移出**——便携版已产出并实机验证（见 4.1.1），
 > 但**安装包（NSIS）确实没做出来**，原因见 4.3；"能装成安装包"这一条仍然只是配置层面的准备。
 
@@ -373,7 +373,7 @@ release/Lumen-conv-便携版/Lumen-conv.exe --smoke \
 复制 Electron 运行时（排除 `default_app.asar`）→ 用 `@electron/asar` 把 `dist/` + `dist-electron/` + 精简
 `package.json` 打成 `resources/app.asar` → 复制 ffmpeg/ffprobe 到 `resources/bin/` → 尝试写图标与版本信息 →
 `rename` 收尾（失败回退为复制，Windows 上目录改名偶发 `EPERM`）。
-产物 `release/Lumen-conv-便携版/` 已实机验证 **74/74 通过、退出码 0**（见 4.1.1）。
+产物 `release/Lumen-conv-便携版/` 已实机验证 **81/81 通过、退出码 0**（见 4.1.1）。
 
 **没有拿到的东西（如实列出）**：electron-builder 生态里的 **NSIS 安装向导、自动更新、代码签名**，
 以及"图标与版本信息由工具链正确写入"这一条——便携版的 exe 现在是 Electron 默认图标、版本信息仍是 Electron 原值。
@@ -423,16 +423,20 @@ release/Lumen-conv-便携版/Lumen-conv.exe --smoke \
 | 5 | `AppSettings.openFolderOnFinish` 只存不用 | `renderer/composables/useStore.ts` 的 `onJobUpdated` 里检测**任务首次变为 `done`**（`job.state === 'done' && prev?.state !== 'done'`），此时若 `settings.openFolderOnFinish` 为真则调用 `api.openOutput(job.id)`。用 `prev?.state !== 'done'` 判断是为了避免后续任何一次 `job:updated` 重复打开资源管理器 | `useStore.ts` 的 `justFinished` 分支；`main.ts` 的 `jobs:open-output` handler 用 `shell.showItemInFolder` 实现 |
 | 6 | `settings:reset` 与 `jobs:cancel-all` 通道已注册但 preload 无入口，设置页也没有「恢复默认设置」按钮 | `preload.ts` 已暴露 `resetSettings()` 与 `cancelAllJobs()`，`shared/types.ts` 的 `ConverterApi` 同步补齐；`SettingsView.vue` 底部 `about` 区新增「恢复默认设置」按钮（`resetAll()`），调用 `resetSettings()` 后回写 `settings` 并重新应用主题 | `preload.ts` 的 `resetSettings` / `cancelAllJobs` 键；`main.ts` 的 `settings:reset` / `jobs:cancel-all` handler；`SettingsView.vue` 的 `resetAll()` |
 | 7 | 设置页的路径与目录只能手输，没有「浏览」按钮 | 新增 `dialog:pick-executable` handler（`main.ts`）+ preload 的 `pickExecutable()`；`SettingsView.vue` 的 ffmpeg / ffprobe 路径输入框旁各有「浏览」按钮，默认输出目录有「选择目录 / 恢复默认」，缩略图缓存有「清理缓存」（走 `cache:clear-thumbnails` → `clearThumbnailCache()`） | 上述三处 handler 与按钮均在源码中；设置页实测渲染出 5 个 `.settings .card` 分组，自检要求 ≥ 3 即通过 |
-| 8 | **Vue 响应式代理导致 IPC 结构化克隆失败，「开始转换」按钮静默失效**（本轮新发现，最严重的一条） | `useStore.ts` 的 `effectiveOptions()` 由 `{ ...options.value, ...(file.overrides ?? {}) }` 改为 `JSON.parse(JSON.stringify(merged))`，把整个结构从响应式图上摘下来；`startConversion()` 用 `try/catch` 包住 `api.createJobs()`，失败时 `console.error` + `showToast('无法创建转换任务：' + msg, 'danger', 8000)`。**完整根因、影响面与复盘见 5.1.1** | 界面自检升到 `--smoke-convert` 一级并加严格断言后：`npm run smoke:ui:full` **74/74 通过、退出码 0**，控制台无任何 `An object could not be cloned.`；`test-assets\samples\sample-h264 (2).mp4` 3.15 MB 真实产出（见 `docs/screenshots/queue-done.png`） |
-| 9 | **打包态路径 bug：便携版上一启动自检就抛 `ENOTDIR, not a directory`**（真实踩坑，只有打包形态才暴露） | 自检的基准目录原来直接用 `app.getAppPath()`。开发态它确实是**项目根**，但在打包态它指向 `...\resources\app.asar` —— 那是一个**文件**，而代码拿它去 `mkdirSync(<base>/docs/screenshots)`，于是 `ENOTDIR`。修复：`electron/main.ts` 新增 `smokeBaseDir()`，`app.isPackaged` 为真时返回 `path.dirname(app.getPath('exe'))`（安装目录 / 便携版目录），否则返回 `app.getAppPath()`；**截图目录**与 `--smoke-file=` 的相对路径解析都改用它 | ① 便携版 `release/Lumen-conv-便携版/Lumen-conv.exe --smoke --smoke-file=… --smoke-convert` 实测 **74/74 通过、退出码 0**（修复前在该形态下无法启动自检）；② 开发态 `smoke:ui:*` 行为不变，仍 **74/74**；③ 便携版目录下**没有**出现 `docs/screenshots/`（截图按设计落在 exe 旁边，运行时可写） |
+| 8 | **Vue 响应式代理导致 IPC 结构化克隆失败，「开始转换」按钮静默失效**（本轮新发现，最严重的一条） | `useStore.ts` 的 `effectiveOptions()` 由 `{ ...options.value, ...(file.overrides ?? {}) }` 改为 `JSON.parse(JSON.stringify(merged))`，把整个结构从响应式图上摘下来；`startConversion()` 用 `try/catch` 包住 `api.createJobs()`，失败时 `console.error` + `showToast('无法创建转换任务：' + msg, 'danger', 8000)`。**完整根因、影响面与复盘见 5.1.1** | 界面自检升到 `--smoke-convert` 一级并加严格断言后：`npm run smoke:ui:full` **81/81 通过、退出码 0**，控制台无任何 `An object could not be cloned.`；`test-assets\samples\sample-h264 (2).mp4` 3.15 MB 真实产出（见 `docs/screenshots/queue-done.png`） |
+| 9 | **打包态路径 bug：便携版上一启动自检就抛 `ENOTDIR, not a directory`**（真实踩坑，只有打包形态才暴露） | 自检的基准目录原来直接用 `app.getAppPath()`。开发态它确实是**项目根**，但在打包态它指向 `...\resources\app.asar` —— 那是一个**文件**，而代码拿它去 `mkdirSync(<base>/docs/screenshots)`，于是 `ENOTDIR`。修复：`electron/main.ts` 新增 `smokeBaseDir()`，`app.isPackaged` 为真时返回 `path.dirname(app.getPath('exe'))`（安装目录 / 便携版目录），否则返回 `app.getAppPath()`；**截图目录**与 `--smoke-file=` 的相对路径解析都改用它 | ① 便携版 `release/Lumen-conv-便携版/Lumen-conv.exe --smoke --smoke-file=… --smoke-convert` 实测 **81/81 通过、退出码 0**（修复前在该形态下无法启动自检）；② 开发态 `smoke:ui:*` 行为不变，仍 **81/81**；③ 便携版目录下**没有**出现 `docs/screenshots/`（截图按设计落在 exe 旁边，运行时可写） |
 | 10 | **同一次自检里截图互相覆盖：`queue.png` 与 `queue-done.png` 是同一张图** | 原来的顺序是"转换完成后先截 `queue-done.png`、再截 `queue.png`"，后者把第 1 步产出的**空队列**那张覆盖成同一张图（两个文件 sha256 完全相同），而文档仍宣称"`queue.png` 是空队列"。修复：用 `const ranConversion = process.argv.includes('--smoke-convert')` 判定，**跑过转换时不再写 `queue.png`**，仅在它不存在时 `console.warn` 提示"请先跑一次不带 `--smoke-convert` 的自检"；同时把正确的两步工作流写进 `main.ts` 的注释 | 重新生成后实测：`queue.png` **22,942 字节（22.4 KB，稳定）**（空队列）；`queue-done.png` **54–58 KB 波动**（有任务）——**哈希不同**。两步命令：`npm run smoke:ui:file` → `npm run smoke:ui:full`。注：`queue-done.png` 的字节数只对当次运行成立，因为任务卡片带「已用时」文本，截图瞬间的秒数不同就会改变 PNG 字节；`queue.png` 不含时间信息所以逐字节稳定。文档记录它们是为证明"两张图确实不同"，不是固定契约 |
 | 11 | 顺带修：「队列卡片显示完成与产物大小」这条此前**只打印不断言** | `main.ts` 里该检查项由"只采集并打印"改为真断言：`queueReport.state.includes('已完成') && /\d/.test(queueReport.outSize) && queueReport.hasOpenBtn`，即**状态芯片含「已完成」+ 产物大小含数字 + 卡片上存在「打开位置」按钮**三者同时成立才通过 | 同一处 `extraChecks` 的判定表达式；实测输出「已完成」/ 产物 3.15 MB / 有打开按钮，全部断言通过 |
 | 12 | **同类根因的第二批：质量 / 分辨率 / 帧率 / 编码器 / 音频 / 文件名模板全都写进了「按文件的 overrides」**（用户追问"质量下拉可以用吗"时发现） | 与第 8 条同源：界面回显读全局、写入却写按文件覆盖，后果是**调好的参数一换文件就全丢**，且界面上看不出任何征兆。修复：按语义分两类——表达"我想转成什么样"的走全局 `options`，真正与具体文件绑定的（裁剪区间、字幕轨道勾选）保留按文件覆盖；控件回显统一改用 `effectiveOptions(file)`，保证"界面显示的值 == 真正用于转换的值" | 新增 4 项质量下拉断言 + 1 项与 ffmpeg 命令对上的硬断言（切「极小体积」后真实任务命令里必须出现 `-crf 34`），实测 `-crf 34` 与界面选择一致 |
-| 13 | **「推荐 / 自定义」两种模式的差别全在折叠线以下，用户看不出区别**（本轮用户真实反馈，原话"推荐设置和自定义没区别啊"） | **功能存在 ≠ 用户感知到**：代码里两种模式确实不同（专业参数区块 + 帧率下拉只在自定义模式出现），但这两处都在 900px 之外。量化根因：① 「视频信息」默认展开占约 270px，把「用途」推到 376px；② 专业参数挂在面板末尾。修复四处：① 视频信息默认收起成一行摘要（`infoOpen`）；② 模式切换下方新增「当前方案摘要」`plan-summary`；③ 专业参数区块**整体搬到面板最上面**（仅自定义模式出现，改名「专业参数」）；④ **取消**"切到自定义自动展开专业参数" | 自检新增断言"自定义模式：专业参数入口出现在首屏"实测 `专业参数@152`；"两种模式在首屏就有可见差别"现在**把两种模式的首屏都打印出来**（推荐 `视频信息@152 / 你要拿去干什么@235 / 在哪播 / 多大体积@646`；自定义 `专业参数@152 / 视频信息@205 / 你要拿去干什么@288 / 在哪播 / 多大体积@699`）。`smoke:ui:file` **62/62**、`smoke:ui:full` **74/74**，退出码 0。对照截图 `mode-recommended.png` / `mode-custom.png`。决策与代价见 `DECISIONS.md` D-018 |
-| 14 | **打包态有 8 项检查被静默跳过 —— 文档却宣称"与开发态完全相同"**（本轮核对覆盖范围时发现，是 ENOTDIR 那条的漏网之鱼） | 第 9 条修 `app.getAppPath()` 时只改了**截图目录**与 `--smoke-file=` 两处，**漏了第三处**：加载第二个样本的路径仍写 `path.join(app.getAppPath(), 'test-assets', …)`。打包态 `app.getAppPath()` 是 `...\resources\app.asar`（文件），拼出来的路径永远不存在 → `if (existsSync(secondSample))` 为假 → **跨文件保留 / 勾选 3 项 / 质量联动 4 项，共 8 项检查一次都没跑过**，而摘要照样打印"58/58 通过"。这就是"少跑"伪装成"通过"：**只要没人数检查项个数，就永远发现不了**。修复：① 路径改用 `smokeBaseDir()`；② 新增 `--smoke-assets=<目录>` 参数（打包态 exe 旁边没有 test-assets，测试素材也不该塞进分发包）；③ **样本缺失时不再静默跳过，而是明确 push 一条失败**，提示怎么修 | 实测：便携版 `--smoke --smoke-file=… --smoke-assets=<仓库 test-assets> --smoke-convert` → **74/74 通过、退出码 0**（修复前是 58/58 且无人察觉）；故意传一个不存在的 `--smoke-assets` 时 → **46/47、退出码 1**，失败项文字直接说明"这 8 项检查会被跳过"（这条是"失败必须可见"的反向验证）。另外顺带确认：GUI 子系统 exe 用 PowerShell 的 `& exe … \| Select-String` 拿到的**不是**进程真实退出码，要用 `Start-Process -Wait -PassThru` 读 `.ExitCode` |
-| 15 | **自定义模式里还摆着一排"用途推荐卡片"，用户认为不专业**（本轮用户真实反馈，原话"自定义不要这个推荐，缺少专业性，这个用最初那个版本自己调整更合适"） | D-018 只解决了"两种模式看不出区别"，但用户的下一层意思是**自定义模式根本不该出现推荐**。修复：① 「你要拿去干什么」整块在自定义模式下不渲染（连同"已偏离推荐值"提示与用途小贴士——它们讲的全是推荐值）；② 专业参数**常开**，删掉折叠开关与 `advancedOpen` 状态；③ 摘要行在自定义模式下显示「自定义参数」，而不是用户看不到、也改不了的用途名；④ **兼容性预检拆成独立区块、两种模式都显示**（它讲的是事实不是推荐，而且自定义模式下更容易手选 H.265 配老电视）；⑤ 区块顺序改由 CSS `order` 控制（不复制模板）：专业参数 → 质量与尺寸 → 在哪播 / 多大体积 → 视频信息 → 兼容性预检 | 新增两条专门盯这次需求的断言：「自定义模式：不出现用途推荐卡片」实测卡片数 **0**；「推荐模式：用途推荐卡片齐全」实测 **8**；并把"自定义模式出现专业参数"升级为"**且字段直接可见，不需要再点一次**"。`smoke:ui:file` **62/62**、`smoke:ui:full` **74/74**，退出码 0；便携版 **74/74**、退出码 0。对照截图 `mode-recommended.png`（8 张卡片）与 `mode-custom.png`（无卡片、参数铺满首屏）。决策与代价见 `DECISIONS.md` D-019 |
-| 16 | **「用途」与「在哪播 / 多大体积」耦合**（本轮用户真实反馈）—— 查下来是"语义重叠但没接上" | 三个具体问题：① 「目标体积上限」控件住在「在哪播」里、值却由用途决定（发微信=100MB），**一个参数两个主人**；② 用途有「老电视 / 车载 U 盘」，设备下拉有「老安卓电视 / 车机」，两处都在问设备；③ **选前者根本不会改后者**（`applyUseCase` 与 `chooseUseCase` 都不碰 `deviceId`），于是那个用途最该做的兼容性预检按"不限定"跑，等于没检查。修复：① `UseCase` 新增 `deviceId`，两条写入路径都补上（8 个用途各自映射）；② 设备提示写明"由用途「X」自动设定"，手动改过后改口为"已手动改过（推荐：Y）"并出现「用回用途推荐」；③ 体积上限抽成纯展示组件 `SizeLimitField.vue`，归还用途区（推荐模式）/ 质量区（自定义模式）；④ 区块改名「在哪播」，副标题"只用于兼容性预检" | 新增 3 条断言全部通过：「体积上限控件归属用途区」用途区内=true / 设备区内=false；「选老电视会带出对应设备」→ `android-old`；「设备提示写明来源且手动改过有恢复入口」。`smoke:ui:file` **62/62**、`smoke:ui:full` **74/74**，便携版 **74/74**，退出码均 0。决策与代价见 `DECISIONS.md` D-020 |
-| 17 | **"换成手机"但屏幕比例没变 —— 界面显示了一个它不会产出的分辨率**（本轮用户真实反馈） | 根因：`分辨率` 是**上限**，命令构建有"只缩不放"规则（`smoke-test.mjs` 本来就有 `源分辨率低于目标时不放大` 这条用例）。640×360 的源选 1080p：界面写「1080p 全高清」、卡片写"按手机屏幕尺寸"，**产物还是 640×360**。修复：① 抽出 `shared/output-size.ts` 的 `planOutputSize()` 作为**输出尺寸与 ffmpeg 滤镜的唯一计算处**（`commands.ts` 用它返回的 `filters`，界面用它返回的 `width/height/note`）——显示与执行共用一份计划，就不可能再对不上；② 「质量与尺寸」新增「输出尺寸 640×360 · 源低于 1080p 上限，不放大」，分辨率标签补「（上限）」；③ 去掉「手机存着看」的过度承诺文案；④ 新增**默认关闭**的「画面比例」：竖屏 9:16 补黑边 / 裁剪填满，画布短边取 `min(上限, 源短边)`，竖屏下同样不放大 | `smoke` **60/60**（+4 条画面比例用例）、`test:real:convert` **26/26**（+3 条 ffprobe 回读：4K→**720×1280** 补边/裁剪、360p 源→**360×640** 不放大）、`smoke:ui:file` **62/62**（+3 条：输出尺寸显示 640×360 且标注不放大 / 切竖屏变 360×640 / 切回可还原）。新增截图 `docs/screenshots/size-plan.png` 作为视觉证据。<br>**过程中还抓到一个真 bug**：竖屏补边的 `force_original_aspect_ratio` 会算出小数尺寸（360×202.5），ffmpeg 取整后改 SAR 补偿，ffprobe 回读的 `displayWidth` 变成 **361** —— 真实素材测试抓到，补 `setsar=1` 后精确相符。见 `DECISIONS.md` D-021 |
+| 13 | **「推荐 / 自定义」两种模式的差别全在折叠线以下，用户看不出区别**（本轮用户真实反馈，原话"推荐设置和自定义没区别啊"） | **功能存在 ≠ 用户感知到**：代码里两种模式确实不同（专业参数区块 + 帧率下拉只在自定义模式出现），但这两处都在 900px 之外。量化根因：① 「视频信息」默认展开占约 270px，把「用途」推到 376px；② 专业参数挂在面板末尾。修复四处：① 视频信息默认收起成一行摘要（`infoOpen`）；② 模式切换下方新增「当前方案摘要」`plan-summary`；③ 专业参数区块**整体搬到面板最上面**（仅自定义模式出现，改名「专业参数」）；④ **取消**"切到自定义自动展开专业参数" | 自检新增断言"自定义模式：专业参数入口出现在首屏"实测 `专业参数@152`；"两种模式在首屏就有可见差别"现在**把两种模式的首屏都打印出来**（推荐 `视频信息@152 / 你要拿去干什么@235 / 在哪播 / 多大体积@646`；自定义 `专业参数@152 / 视频信息@205 / 你要拿去干什么@288 / 在哪播 / 多大体积@699`）。`smoke:ui:file` **66/66**、`smoke:ui:full` **81/81**，退出码 0。对照截图 `mode-recommended.png` / `mode-custom.png`。决策与代价见 `DECISIONS.md` D-018 |
+| 14 | **打包态有 8 项检查被静默跳过 —— 文档却宣称"与开发态完全相同"**（本轮核对覆盖范围时发现，是 ENOTDIR 那条的漏网之鱼） | 第 9 条修 `app.getAppPath()` 时只改了**截图目录**与 `--smoke-file=` 两处，**漏了第三处**：加载第二个样本的路径仍写 `path.join(app.getAppPath(), 'test-assets', …)`。打包态 `app.getAppPath()` 是 `...\resources\app.asar`（文件），拼出来的路径永远不存在 → `if (existsSync(secondSample))` 为假 → **跨文件保留 / 勾选 3 项 / 质量联动 4 项，共 8 项检查一次都没跑过**，而摘要照样打印"58/58 通过"。这就是"少跑"伪装成"通过"：**只要没人数检查项个数，就永远发现不了**。修复：① 路径改用 `smokeBaseDir()`；② 新增 `--smoke-assets=<目录>` 参数（打包态 exe 旁边没有 test-assets，测试素材也不该塞进分发包）；③ **样本缺失时不再静默跳过，而是明确 push 一条失败**，提示怎么修 | 实测：便携版 `--smoke --smoke-file=… --smoke-assets=<仓库 test-assets> --smoke-convert` → **81/81 通过、退出码 0**（修复前是 58/58 且无人察觉）；故意传一个不存在的 `--smoke-assets` 时 → **46/47、退出码 1**，失败项文字直接说明"这 8 项检查会被跳过"（这条是"失败必须可见"的反向验证）。另外顺带确认：GUI 子系统 exe 用 PowerShell 的 `& exe … \| Select-String` 拿到的**不是**进程真实退出码，要用 `Start-Process -Wait -PassThru` 读 `.ExitCode` |
+| 15 | **自定义模式里还摆着一排"用途推荐卡片"，用户认为不专业**（本轮用户真实反馈，原话"自定义不要这个推荐，缺少专业性，这个用最初那个版本自己调整更合适"） | D-018 只解决了"两种模式看不出区别"，但用户的下一层意思是**自定义模式根本不该出现推荐**。修复：① 「你要拿去干什么」整块在自定义模式下不渲染（连同"已偏离推荐值"提示与用途小贴士——它们讲的全是推荐值）；② 专业参数**常开**，删掉折叠开关与 `advancedOpen` 状态；③ 摘要行在自定义模式下显示「自定义参数」，而不是用户看不到、也改不了的用途名；④ **兼容性预检拆成独立区块、两种模式都显示**（它讲的是事实不是推荐，而且自定义模式下更容易手选 H.265 配老电视）；⑤ 区块顺序改由 CSS `order` 控制（不复制模板）：专业参数 → 质量与尺寸 → 在哪播 / 多大体积 → 视频信息 → 兼容性预检 | 新增两条专门盯这次需求的断言：「自定义模式：不出现用途推荐卡片」实测卡片数 **0**；「推荐模式：用途推荐卡片齐全」实测 **8**；并把"自定义模式出现专业参数"升级为"**且字段直接可见，不需要再点一次**"。`smoke:ui:file` **66/66**、`smoke:ui:full` **81/81**，退出码 0；便携版 **81/81**、退出码 0。对照截图 `mode-recommended.png`（8 张卡片）与 `mode-custom.png`（无卡片、参数铺满首屏）。决策与代价见 `DECISIONS.md` D-019 |
+| 16 | **「用途」与「在哪播 / 多大体积」耦合**（本轮用户真实反馈）—— 查下来是"语义重叠但没接上" | 三个具体问题：① 「目标体积上限」控件住在「在哪播」里、值却由用途决定（发微信=100MB），**一个参数两个主人**；② 用途有「老电视 / 车载 U 盘」，设备下拉有「老安卓电视 / 车机」，两处都在问设备；③ **选前者根本不会改后者**（`applyUseCase` 与 `chooseUseCase` 都不碰 `deviceId`），于是那个用途最该做的兼容性预检按"不限定"跑，等于没检查。修复：① `UseCase` 新增 `deviceId`，两条写入路径都补上（8 个用途各自映射）；② 设备提示写明"由用途「X」自动设定"，手动改过后改口为"已手动改过（推荐：Y）"并出现「用回用途推荐」；③ 体积上限抽成纯展示组件 `SizeLimitField.vue`，归还用途区（推荐模式）/ 质量区（自定义模式）；④ 区块改名「在哪播」，副标题"只用于兼容性预检" | 新增 3 条断言全部通过：「体积上限控件归属用途区」用途区内=true / 设备区内=false；「选老电视会带出对应设备」→ `android-old`；「设备提示写明来源且手动改过有恢复入口」。`smoke:ui:file` **66/66**、`smoke:ui:full` **81/81**，便携版 **81/81**，退出码均 0。决策与代价见 `DECISIONS.md` D-020 |
+| 17 | **"换成手机"但屏幕比例没变 —— 界面显示了一个它不会产出的分辨率**（本轮用户真实反馈） | 根因：`分辨率` 是**上限**，命令构建有"只缩不放"规则（`smoke-test.mjs` 本来就有 `源分辨率低于目标时不放大` 这条用例）。640×360 的源选 1080p：界面写「1080p 全高清」、卡片写"按手机屏幕尺寸"，**产物还是 640×360**。修复：① 抽出 `shared/output-size.ts` 的 `planOutputSize()` 作为**输出尺寸与 ffmpeg 滤镜的唯一计算处**（`commands.ts` 用它返回的 `filters`，界面用它返回的 `width/height/note`）——显示与执行共用一份计划，就不可能再对不上；② 「质量与尺寸」新增「输出尺寸 640×360 · 源低于 1080p 上限，不放大」，分辨率标签补「（上限）」；③ 去掉「手机存着看」的过度承诺文案；④ 新增**默认关闭**的「画面比例」：竖屏 9:16 补黑边 / 裁剪填满，画布短边取 `min(上限, 源短边)`，竖屏下同样不放大 | `smoke` **77/77**（+4 条画面比例用例）、`test:real:convert` **28/28**（+3 条 ffprobe 回读：4K→**720×1280** 补边/裁剪、360p 源→**360×640** 不放大）、`smoke:ui:file` **66/66**（+3 条：输出尺寸显示 640×360 且标注不放大 / 切竖屏变 360×640 / 切回可还原）。新增截图 `docs/screenshots/size-plan.png` 作为视觉证据。<br>**过程中还抓到一个真 bug**：竖屏补边的 `force_original_aspect_ratio` 会算出小数尺寸（360×202.5），ffmpeg 取整后改 SAR 补偿，ffprobe 回读的 `displayWidth` 变成 **361** —— 真实素材测试抓到，补 `setsar=1` 后精确相符。见 `DECISIONS.md` D-021 |
+| 18 | **音频处理缺失**（用户从"还能优化什么"清单里选的第 1 项）：此前只有"移除音频"（`-an`），没有任何音频能力 | 新增三项，全在「专业参数」里（自定义模式）：**响度归一化**（EBU R128 单遍 loudnorm，-16 LUFS / TP -1.5 / LRA 11）、**音量增益**（-30~+30 dB，越界夹紧）、**声道**（保持/单声道/立体声，显式选择优先于原有的自动下混推断）。**顺序是硬规则：先增益、后归一化** —— 反过来的话 loudnorm 会把用户加的增益重新拉平。直通与"移除音频"下不生成 `-af` | `smoke` 新增 6 条（loudnorm 滤镜 / 顺序 / 夹紧 / `-ac 1` / source 模式不加 `-ac` / copy 不生成 `-af`）；`test:real:convert` 新增 1 条真实转码（响度归一化 + -3dB + 单声道 → 产物确为 1 声道、时长不变）；`smoke:ui:file` 新增 1 条（三项控件存在且改动跨文件保留）。见 `DECISIONS.md` D-022 |
+| 19 | **字幕烧录缺失**（第 2 项）：只能"保留字幕轨"，而**能否显示取决于播放器**（很多电视手机默认不显示），对方看到的仍是无字幕画面 | 新增 hardcode 烧录。两件最容易错的事集中在 `shared/subtitle-burn.ts`：**路径转义**（反斜杠/冒号/单引号/整体引号四步，中文空格都要保住）与**全局流 index → 第几条字幕流的 si 换算**（搞混的表现是"烧出来是另一条字幕"，不报错）。滤镜排在缩放之后（否则字幕跟着画面一起缩放）。**两道 block 级拦截**（构建期 + 兼容性预检各一份，都给一键修复）：直通模式不能烧录、图形字幕（PGS/VobSub）不能烧录。界面把"保留字幕轨"与"烧进画面"分成两组并分别解释代价 | `smoke` 新增 9 条（转义 2 / si 换算 / 两类拦截 2 / 滤镜顺序 / 预检 block+info 3）；`test:real:convert` 新增 1 条**真实内嵌字幕素材**烧录（产物不再带字幕流且视频仍在）；`smoke:ui:file` 新增 2 条（单选组、预检联动）。见 `DECISIONS.md` D-022 |
+| 20 | **队列只能取消/重试/删除**（第 3 项）：不能暂停、不能重排、并发数藏在设置页、没有总剩余、盘满了要等 ffmpeg 转很久才报错 | 引擎加 `pauseQueue/resumeQueue/moveJob/queuedIds`。**暂停的语义定为"不再启动新任务，跑着的跑完"** —— ffmpeg 不支持断点续传，硬停一个跑一半的任务只能从头再来，那叫取消。重排只动排队数组，界面上重排按钮只在 `queued` 状态渲染。队列页可直接调并发（1~4）。总剩余 = 运行中 ETA + 排队数 × 已完成平均耗时，**没有历史数据时显示"—"不编数字**。开转前做**磁盘空间预检**（新 IPC `system:free-space`）：留 10% 余量、只说"可能不够"、不硬拦 | `smoke` 新增 2 条（暂停期间 0 个在跑 / 3 个停在排队，继续后确实启动；置顶/上移/下移/非法 id）；`smoke:ui:full` 新增 3 条走真实界面链路（点暂停 → 点开始转换 → 任务停在排队中且带 3 个重排按钮 → 点继续恢复）。**第一版给暂停按钮加了 `disabled`（队列空时禁用），把"先暂停再开转"这条常见路径堵死了 —— 是自检把它暴露出来的**。见 `DECISIONS.md` D-023 |
+| 21 | **没有 Shell 集成**（第 4 项）：只能先开窗口再拖文件，离"桌面客户端"差一步 | 命令行接文件（`videoPathsFromArgv`：判据是"文件存在 + 扩展名在支持列表"，**不是**"取最后一个参数"——否则会把 `--smoke` 这类开关当成文件）；应用已开着时由 `second-instance` 把路径转交给现有窗口；走与拖拽**完全相同**的 `addFiles` 路径。「发送到」+ 右键菜单**只写 HKCU、可一键撤销、不动文件关联**（不抢用户原有播放器）；**开发态拒绝写入**（那时 exe 是 electron.exe，注册了只会启动裸 Electron）。多文件与纯音频场景一并支持 | 新增 `npm run smoke:ui:cli`（16 项）：命令行传入的文件必须自动出现在列表里 + 开发态必须拒绝写注册表（**安全性断言**）。**自检抓到一个真 bug**：主进程 `handle()` 返回 `{ok,data}`，而 preload 写成 `invoke(...) as Promise<string[]>`，`as` 把类型不匹配藏住了，运行时 `pending.length` 是 undefined、文件永远加载不出来。另修「空状态引导已显示」在带文件启动时的假失败（反向断言）。见 `DECISIONS.md` D-024 |
 
 > 第 13 条还附了一个**自己造的坑**：把专业参数区块搬到最上面时，第一版只搬了开标签、
 > 没搬内容、还多留了一个 `</div>`，于是 `pro-block` 把「视频信息 / 用途 / 在哪播 / 质量」全包了进去——
@@ -503,7 +507,7 @@ after JSON round-trip: OK
 
 > 证据边界：修复前的源码**不在 git 历史里**（仓库此前从未提交过源码，索引中的版本已是修复后的版本），
 > 所以上面的旧表达式取自当时的改动说明；"旧实现下每次点击都会失败"是由该表达式 + 上面的实验推出的结论，
-> 而不是从旧源码里读出来的。修复后的代码、实验输出与 `smoke:ui:full` 的 74/74 都是可直接核对的。
+> 而不是从旧源码里读出来的。修复后的代码、实验输出与 `smoke:ui:full` 的 81/81 都是可直接核对的。
 
 旧实现的 `startConversion()` 内部没有 `try/catch`，异常沿 Promise 一路向外传：
 两个调用点（`FileList.vue` 的 `convertAll()`、`DetailsPanel.vue` 的 `convertThis()`）虽然 `await` 了它，

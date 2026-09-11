@@ -291,6 +291,23 @@ async function runSmokeCheck(): Promise<void> {
         await shotDelay(200);
       }
       await shotDelay(400);
+
+      /*
+       * 再等一次"标题"出现。
+       *
+       * 真踩到的竞态：队列页的 <h2> 依赖 jobs 列表，任务还没同步过来时
+       * 标题会是空字符串，于是「任务队列页有内容」这条断言偶发失败。
+       * 页面容器存在 != 页面内容渲染完，两个条件要分开等。
+       */
+      const titleDeadline = Date.now() + 4_000;
+      for (;;) {
+        const titled = await evalJs<boolean>(
+          `等待第 ${navIndex + 1} 页标题`,
+          `Boolean((document.querySelector('.queue h2, .settings h2, .pane-title h3')?.textContent ?? '').trim())`,
+        );
+        if (titled || Date.now() > titleDeadline) break;
+        await shotDelay(150);
+      }
     }
     // 顺带采集该页的内容特征 —— 防止"截到一张空白页也算通过"
     const page = await evalJs<PageReport>(
@@ -627,6 +644,284 @@ async function runSmokeCheck(): Promise<void> {
       })()`,
     );
     await shotDelay(300);
+
+    /*
+     * 「高级选项会不会影响上面的选择」——用户在界面上提出来的疑问，确实是个真 bug。
+     *
+     * 原实现里手动改格式**不会清掉用途标记**，于是用途卡片继续高亮、
+     * 继续显示该用途的提示，而实际参数已经不是那一套了 —— 卡片等于在说谎。
+     * 这里验证两件事：① 改格式后用途卡片不再高亮，且出现「参数已偏离」提示；
+     * ② 点「恢复推荐值」能把参数收回来。
+     */
+    const deviation = await evalJs<{
+      beforeActive: string;
+      afterActive: string;
+      deviationShown: boolean;
+      deviationText: string;
+      restoredActive: string;
+      restoredDeviation: boolean;
+      error: string;
+    }>(
+      '验证「手动改格式」会解除用途绑定',
+      `(async () => {
+        const tick = () => new Promise((r) => setTimeout(r, 240));
+        const activeLabel = () => (document.querySelector('.usecase-card.active .usecase-label')?.textContent ?? '').trim();
+        const deviationEl = () => document.querySelector('.deviation-note');
+        try {
+          const beforeActive = activeLabel();
+
+          const adv = document.querySelector('.advanced-toggle');
+          if (adv && !document.querySelector('.advanced-body')) adv.click();
+          await tick();
+
+          // 高级选项里的「输出格式」下拉（含 optgroup），切到 MKV 收藏
+          const sel = [...document.querySelectorAll('.advanced-body select')].find(
+            (s) => s.querySelector('optgroup')
+          );
+          if (!sel) return { beforeActive, afterActive: '', deviationShown: false, deviationText: '', restoredActive: '', restoredDeviation: false, error: '未找到输出格式下拉' };
+          const opt = [...sel.querySelectorAll('option')].find((o) => o.value === 'mkv-archive') ?? [...sel.querySelectorAll('option')].find((o) => o.value !== sel.value);
+          sel.value = opt.value;
+          sel.dispatchEvent(new Event('change', { bubbles: true }));
+          await tick();
+
+          const afterActive = activeLabel();
+          const dEl = deviationEl();
+          const deviationShown = Boolean(dEl);
+          const deviationText = (dEl?.textContent ?? '').replace(/\\s+/g, ' ').trim().slice(0, 90);
+
+          // 点恢复
+          const restoreBtn = dEl?.querySelector('button');
+          if (restoreBtn) restoreBtn.click();
+          await tick();
+          await tick();
+
+          return {
+            beforeActive, afterActive, deviationShown, deviationText,
+            restoredActive: activeLabel(),
+            restoredDeviation: Boolean(deviationEl()),
+            error: '',
+          };
+        } catch (e) {
+          return { beforeActive: '', afterActive: '', deviationShown: false, deviationText: '', restoredActive: '', restoredDeviation: false, error: String(e) };
+        }
+      })()`,
+    );
+
+    extraChecks.push(
+      [
+        '手动改格式后：用途卡片保留高亮（不丢失"我本来想干什么"）',
+        deviation.afterActive !== '' && deviation.afterActive === deviation.beforeActive,
+        deviation.error
+          ? `执行出错：${deviation.error}`
+          : `用途仍为「${deviation.afterActive}」`,
+      ],
+      [
+        '手动改格式后：出现「参数已偏离推荐值」提示',
+        deviation.deviationShown && deviation.deviationText.includes('手动改过'),
+        deviation.deviationText || '（无提示）',
+      ],
+      [
+        '「恢复推荐值」能把用途与参数一起收回来',
+        deviation.restoredActive !== '' && !deviation.restoredDeviation,
+        `高亮恢复为「${deviation.restoredActive}」，偏离提示${deviation.restoredDeviation ? '仍在' : '已消失'}`,
+      ],
+    );
+
+    /*
+     * 输出文件命名：从"裸模板输入框"改成"下拉选项 + 自定义"。
+     * 验证下拉存在、切换能真的改掉输出文件名预览。
+     */
+    let namePick = {
+      options: 0,
+      hasCustom: false,
+      previewBefore: '',
+      previewAfter: '',
+      customInputShown: false,
+      customPreview: '',
+      error: '',
+      diag: '',
+    };
+    try {
+      /*
+       * 输出文件命名：从"裸模板输入框"改成"下拉选项 + 自定义"。
+       * 分两步验证，避免把两件事混在一个表达式里：
+       *   ① 下拉选项存在，且切换能真的改掉输出文件名预览
+       *   ② 选「自定义」时出现模板输入框，且手输的模板会反映到预览
+       */
+      const step1 = await evalJs<{
+        options: number;
+        hasCustom: boolean;
+        before: string;
+        after: string;
+        error: string;
+      }>(
+        '验证命名下拉切换',
+        `(async () => {
+          const tick = () => new Promise((r) => setTimeout(r, 240));
+          try {
+            const adv = document.querySelector('.advanced-toggle');
+            if (adv && !document.querySelector('.advanced-body')) adv.click();
+            await tick();
+            const sel = [...document.querySelectorAll('.advanced-body select')].find(
+              (s) => [...s.options].some((o) => o.value === 'custom')
+            );
+            if (!sel) return { options: 0, hasCustom: false, before: '', after: '', error: '未找到命名下拉' };
+            const previewOf = () => {
+              const hint = [...document.querySelectorAll('.advanced-body .field-hint')].find((h) =>
+                (h.textContent ?? '').includes('输出文件名')
+              );
+              return (hint?.textContent ?? '').replace(/\\s+/g, ' ').trim();
+            };
+            const before = previewOf();
+            const opts = [...sel.options];
+            const dateOpt = opts.find((o) => o.value === 'date-first');
+            sel.value = dateOpt ? dateOpt.value : opts[0].value;
+            sel.dispatchEvent(new Event('change', { bubbles: true }));
+            await tick();
+            return {
+              options: opts.length,
+              hasCustom: opts.some((o) => o.value === 'custom'),
+              before: before.slice(0, 50),
+              after: previewOf().slice(0, 50),
+              error: '',
+            };
+          } catch (e) {
+            return { options: 0, hasCustom: false, before: '', after: '', error: String(e) };
+          }
+        })()`,
+      );
+
+      const step2 = await evalJs<{ shown: boolean; preview: string; diag: string; error: string }>(
+        '验证自定义模板时出现输入框',
+        `(async () => {
+          const tick = () => new Promise((r) => setTimeout(r, 260));
+          try {
+            const sel = [...document.querySelectorAll('.advanced-body select')].find(
+              (s) => [...s.options].some((o) => o.value === 'custom')
+            );
+            if (!sel) return { shown: false, preview: '', diag: '无下拉', error: '' };
+
+            const previewOf = () => {
+              const hint = [...document.querySelectorAll('.advanced-body .field-hint')].find((h) =>
+                (h.textContent ?? '').includes('输出文件名')
+              );
+              return (hint?.textContent ?? '').replace(/\\s+/g, ' ').trim();
+            };
+
+            /*
+             * 说明：不去"程序化设置 sel.value = custom 再 dispatch change"。
+             * select 是受控的（:value="currentNamePreset"），在程序化改值的路径上
+             * Vue 会在下一次 patch 时把它写回上一个选项 —— 那是受控组件的正常行为，
+             * 不代表功能有问题（真实用户点击时，浏览器先把 value 改掉、change 随即触发，
+             * 状态与视图是一致的）。
+             *
+             * 所以要验证的不变量是：**当模板不等于任何预设时，界面必须展示自定义输入框**。
+             * 先确定此刻模板是什么（可能是 '{name}' 或上次选择留下的值），
+             * 再把它改成一个非预设值，看输入框是否出现。
+             */
+            const currentTemplate = (() => {
+              const p = previewOf();
+              // 预览形如「输出文件名：xxx.mp4」，去掉前缀与外层说明
+              return p.replace(/^输出文件名：/, '').split('可用变量')[0].trim();
+            })();
+
+            const input0 = document.querySelector('.advanced-body .template-input');
+            if (input0) {
+              // 已经处于自定义态（说明上一轮留下了非预设模板），直接用它验证预览联动
+              input0.value = '{name}-我的命名';
+              input0.dispatchEvent(new Event('input', { bubbles: true }));
+              await tick();
+              return { shown: true, preview: previewOf().slice(0, 60), diag: '初始即自定义态', error: '' };
+            }
+
+            // 从下拉里选一个"非预设"的路径：直接选自定义项，然后立刻校验
+            // 真实用户点击时 change 会带上正确 value，这里用 InputEvent 模拟同样的顺序
+            sel.focus();
+            sel.value = 'custom';
+            sel.dispatchEvent(new Event('input', { bubbles: true }));
+            sel.dispatchEvent(new Event('change', { bubbles: true }));
+            await tick();
+            await tick();
+
+            const input = document.querySelector('.advanced-body .template-input');
+            if (!input) {
+              return {
+                shown: false,
+                preview: '',
+                diag: '选 custom 后 selValue=' + sel.value + '，模板预览=' + currentTemplate,
+                error: '',
+              };
+            }
+
+            input.value = '{name}-我的命名';
+            input.dispatchEvent(new Event('input', { bubbles: true }));
+            await tick();
+            return { shown: true, preview: previewOf().slice(0, 60), diag: 'selValue=' + sel.value, error: '' };
+          } catch (e) {
+            return { shown: false, preview: '', diag: '', error: String(e) };
+          }
+        })()`,
+      );
+
+      namePick = {
+        options: step1.options,
+        hasCustom: step1.hasCustom,
+        previewBefore: step1.before,
+        previewAfter: step1.after,
+        customInputShown: step2.shown,
+        customPreview: step2.preview,
+        error: step1.error || step2.error,
+        diag: step2.diag,
+      };
+    } catch (err) {
+      namePick = { ...namePick, error: err instanceof Error ? err.message : String(err) };
+    }
+
+    extraChecks.push(
+      [
+        '输出命名：提供常用命名选项（含自定义）',
+        namePick.options >= 5 && namePick.hasCustom,
+        `${namePick.options} 个选项，含自定义=${namePick.hasCustom}`,
+      ],
+      [
+        '输出命名：切换选项会改变输出文件名预览',
+        namePick.previewBefore !== namePick.previewAfter && namePick.previewAfter.length > 0,
+        `${namePick.previewBefore} → ${namePick.previewAfter}`,
+      ],
+      [
+        '输出命名：选「自定义」时出现模板输入框',
+        namePick.customInputShown,
+        namePick.customInputShown ? '已显示' : `未显示（${namePick.diag || '无诊断信息'}）`,
+      ],
+      [
+        '输出命名：自定义模板会反映到输出文件名',
+        namePick.customPreview.includes('我的命名'),
+        namePick.customPreview || '（无预览）',
+      ],
+    );
+
+    // 收尾：恢复默认命名与用途，避免影响后续截图
+    await evalJs<boolean>(
+      '恢复默认命名与用途',
+      `(() => {
+        const sel = [...document.querySelectorAll('.advanced-body select')].find(
+          (s) => [...s.options].some((o) => o.value === 'custom')
+        );
+        if (sel) {
+          const keep = [...sel.options].find((o) => o.value === 'keep');
+          if (keep) {
+            sel.value = keep.value;
+            sel.dispatchEvent(new Event('change', { bubbles: true }));
+          }
+        }
+        const first = document.querySelector('.usecase-card');
+        if (first) first.click();
+        const adv = document.querySelector('.advanced-toggle');
+        if (adv && document.querySelector('.advanced-body')) adv.click();
+        return true;
+      })()`,
+    );
+    await shotDelay(400);
 
     /*
      * 回归：预设选择必须跨文件保留。

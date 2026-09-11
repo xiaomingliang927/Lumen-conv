@@ -11,7 +11,7 @@
  * 「给人用」的取舍：默认只露前 3 层，高级选项折叠起来。
  * 但每调一个参数都实时给出「预计体积」，因为这是用户最关心的隐性目标。
  */
-import { computed, ref } from 'vue';
+import { computed, ref, watch } from 'vue';
 import {
   CONVERSION_PRESETS,
   FPS_PRESETS,
@@ -133,6 +133,59 @@ const presetGroups = computed(() => {
 /** 当前用途（用于展示说明与提示） */
 const activeUseCase = computed(() => findUseCase(options.value.useCaseId) ?? null);
 
+/**
+ * 当前参数与所选用途的推荐值有哪些不一致。
+ *
+ * 为什么需要它：用户在「高级选项」里改一个下拉框，很容易忘记上面的用途卡片
+ * 已经不再代表实际参数了（例如选了「发微信」却手动把编码器改成 H.265）。
+ * 早期实现里卡片仍会高亮并继续显示该用途的提示，等于在误导用户。
+ * 现在把差异显式列出来，并给一个"恢复推荐值"的出口。
+ */
+const deviations = computed<{ label: string; current: string; expected: string }[]>(() => {
+  const uc = activeUseCase.value;
+  if (!uc) return [];
+  const out: { label: string; current: string; expected: string }[] = [];
+
+  const preset = CONVERSION_PRESETS.find((p) => p.id === uc.presetId);
+  if (preset && options.value.presetId !== preset.id) {
+    const cur = CONVERSION_PRESETS.find((p) => p.id === options.value.presetId);
+    out.push({ label: '输出格式', current: cur?.label ?? options.value.presetId, expected: preset.label });
+  }
+  if (uc.requiresCodec && options.value.videoCodecId !== uc.requiresCodec) {
+    out.push({
+      label: '视频编码器',
+      current: options.value.videoCodecId.toUpperCase(),
+      expected: uc.requiresCodec.toUpperCase(),
+    });
+  }
+  if (options.value.resolutionId !== uc.resolutionId) {
+    const cur = RESOLUTION_PRESETS.find((r) => r.id === options.value.resolutionId);
+    const exp = RESOLUTION_PRESETS.find((r) => r.id === uc.resolutionId);
+    out.push({ label: '分辨率', current: cur?.label ?? options.value.resolutionId, expected: exp?.label ?? uc.resolutionId });
+  }
+  if (options.value.qualityId !== uc.qualityId) {
+    const cur = QUALITY_PRESETS.find((q) => q.id === options.value.qualityId);
+    const exp = QUALITY_PRESETS.find((q) => q.id === uc.qualityId);
+    out.push({ label: '质量', current: cur?.label ?? options.value.qualityId, expected: exp?.label ?? uc.qualityId });
+  }
+  if ((options.value.sizeLimitMb ?? null) !== (uc.sizeLimitMb ?? null)) {
+    out.push({
+      label: '体积上限',
+      current: options.value.sizeLimitMb ? `${options.value.sizeLimitMb} MB` : '不限',
+      expected: uc.sizeLimitMb ? `${uc.sizeLimitMb} MB` : '不限',
+    });
+  }
+  return out;
+});
+
+/** 把参数恢复成所选用途的推荐值 */
+function restoreUseCase(): void {
+  const uc = activeUseCase.value;
+  if (!uc) return;
+  chooseUseCase(uc.id);
+  showToast(`已恢复「${uc.label}」的推荐设置`, 'info', 2500);
+}
+
 /** 当前播放设备（用于展示说明） */
 const activeDevice = computed(() => findDevice(options.value.deviceId) ?? null);
 
@@ -186,13 +239,25 @@ function toggleSub(index: number): void {
 function choosePreset(id: string): void {
   const preset = CONVERSION_PRESETS.find((x) => x.id === id);
   if (!preset) return;
+  const currentUseCase = findUseCase(options.value.useCaseId);
+  // 用途有编码器硬约束时（例如「发微信」必须 H.264），仍然遵守约束
+  const videoCodecId = currentUseCase?.requiresCodec ?? preset.videoCodecId ?? 'none';
+
   options.value = {
     ...options.value,
     presetId: preset.id,
-    videoCodecId: preset.videoCodecId ?? 'none',
+    videoCodecId,
     audioCodecId: preset.audioCodecId,
     qualityId: preset.qualityId,
     resolutionId: preset.resolutionId,
+    /*
+     * 刻意**不清掉 useCaseId**。
+     *
+     * 试过"手动改格式就解除用途绑定"，结果是：卡片不亮了，但用户也失去了
+     * "我本来想干什么 / 怎么回去"的线索 —— 等于把问题从一个坑挪到另一个坑。
+     * 更好的做法是保留用途标记，让卡片显式列出"哪些参数被改动了"并给一键恢复
+     * （见 deviations / restoreUseCase）。
+     */
     // 直通预设下音轨也必须直通，否则会出现「视频直通 + 音频重编码」的隐性行为
     ...(preset.videoCodecId === 'copy' && CONTAINERS[preset.container].audioCodecs.includes('copy')
       ? { audioCodecId: 'copy' }
@@ -240,6 +305,54 @@ const templatePreview = computed(() => {
   const ext = currentContainer.value.extension || 'mp4';
   return `${rendered}.${ext}`;
 });
+
+/**
+ * 文件名命名的可选方案。
+ *
+ * 原来只有一个裸输入框，要用户自己敲 `{name}` 这种占位符 —— 对普通用户等于没有引导。
+ * 现在把最常见的几种命名做成选项，同时保留「自定义」让愿意写模板的人自己填。
+ * 选项的 value 就是模板字符串，所以底层逻辑完全不用改。
+ */
+const NAME_PRESETS: { id: string; label: string; template: string }[] = [
+  { id: 'keep', label: '保持原文件名', template: '{name}' },
+  { id: 'suffix', label: '原名 + 用途后缀', template: '{name}-转换' },
+  { id: 'date-first', label: '日期 + 原名', template: '{date}-{name}' },
+  { id: 'preset-suffix', label: '原名 + 输出格式', template: '{name}-{preset}' },
+  { id: 'custom', label: '自定义模板…', template: '' },
+];
+
+/** 当前模板是否匹配某个预设（匹配不上就落到「自定义」） */
+const matchedNamePreset = computed(() => {
+  const t = eff.value.fileNameTemplate;
+  const hit = NAME_PRESETS.find((p) => p.id !== 'custom' && p.template === t);
+  return hit?.id ?? 'custom';
+});
+
+/**
+ * 下拉框显示的选项。
+ *
+ * 刻意用一个本地 ref 而不是直接绑 `matchedNamePreset`：
+ * 用户选「自定义」时模板还没变（仍是上一个预设的值），计算属性依旧算出旧选项，
+ * Vue 会在下一次 patch 时把受控 select 的值写回去 —— 表现为"点了自定义又弹回来"。
+ * 用本地 ref 记录"用户当前选的是哪一项"，展示与判定就解耦了；
+ * 当模板被外部改掉（例如切了用途、或手输模板）时再同步回来。
+ */
+const namePresetChoice = ref(matchedNamePreset.value);
+watch(matchedNamePreset, (v) => {
+  // 只在用户没主动选「自定义」时跟随外部变化，避免把用户的选择冲掉
+  if (namePresetChoice.value !== 'custom') namePresetChoice.value = v;
+});
+
+function chooseNamePreset(id: string): void {
+  const p = NAME_PRESETS.find((x) => x.id === id);
+  if (!p) return;
+  namePresetChoice.value = id;
+  if (p.id === 'custom') {
+    // 切到自定义时保留当前模板值，让用户接着改（不重置成空）
+    return;
+  }
+  setGlobal({ fileNameTemplate: p.template });
+}
 
 const quality = computed(() => QUALITY_PRESETS.find((q) => q.id === eff.value.qualityId));
 
@@ -409,6 +522,22 @@ void VIDEO_CODECS;
         </div>
 
         <p v-if="activeUseCase" class="usecase-desc">{{ activeUseCase.description }}</p>
+
+        <!-- 参数与用途推荐值不一致时，明确说出来并给恢复入口 -->
+        <div v-if="deviations.length > 0" class="alert alert-warning deviation-note">
+          <span>✎</span>
+          <div class="deviation-body">
+            <strong>你手动改过这些设置，已不同于「{{ activeUseCase?.label }}」的推荐值</strong>
+            <ul class="deviation-list">
+              <li v-for="d in deviations" :key="d.label">
+                {{ d.label }}：<span class="mono">{{ d.current }}</span>
+                <span class="muted">（推荐 {{ d.expected }}）</span>
+              </li>
+            </ul>
+          </div>
+          <button class="btn btn-sm" @click="restoreUseCase">恢复推荐值</button>
+        </div>
+
         <div v-if="activeUseCase?.tip" class="alert alert-info preset-tip">
           <span>💡</span><span>{{ activeUseCase.tip }}</span>
         </div>
@@ -692,16 +821,34 @@ void VIDEO_CODECS;
           <!-- 文件名与元数据 -->
           <div class="field-grid">
             <label class="field">
-              <span class="field-label">文件名模板</span>
+              <span class="field-label">输出文件命名</span>
+              <!--
+                key 是必要的：下面那个自定义输入框用 v-if 控制显隐，
+                兄弟节点数量会变。没有 key 时 Vue 在复用时可能把 select 的
+                受控值对错元素，表现为"选了自定义又弹回上一个选项"（实测踩到）。
+              -->
+              <select
+                key="name-preset-select"
+                class="select"
+                :value="namePresetChoice"
+                @change="chooseNamePreset(($event.target as HTMLSelectElement).value)"
+              >
+                <option v-for="p in NAME_PRESETS" :key="p.id" :value="p.id">{{ p.label }}</option>
+              </select>
               <input
-                class="input"
+                v-if="namePresetChoice === 'custom'"
+                key="name-custom-input"
+                class="input template-input"
                 :value="eff.fileNameTemplate"
                 placeholder="{name}"
                 @input="setGlobal({ fileNameTemplate: ($event.target as HTMLInputElement).value })"
               />
               <span class="field-hint">
-                可用变量：<code>{name}</code> <code>{preset}</code> <code>{date}</code>
-                · 预览：<span class="mono">{{ templatePreview }}</span>
+                输出文件名：<span class="mono">{{ templatePreview }}</span>
+                <template v-if="namePresetChoice === 'custom'">
+                  <br />可用变量：<code>{name}</code> 原文件名、<code>{preset}</code> 输出格式、
+                  <code>{date}</code> 日期
+                </template>
               </span>
             </label>
           </div>
@@ -1000,6 +1147,35 @@ void VIDEO_CODECS;
 .size-limit-note {
   margin-bottom: 10px;
   align-items: flex-start;
+}
+
+/* ---------- 参数偏离用途推荐值时的提示 ---------- */
+
+.deviation-note {
+  margin-top: 8px;
+  align-items: flex-start;
+}
+
+.deviation-body {
+  flex: 1;
+  min-width: 0;
+}
+.deviation-body strong {
+  font-size: 12.5px;
+  display: block;
+}
+
+.deviation-list {
+  margin: 4px 0 0;
+  padding-left: 18px;
+  font-size: 11.5px;
+  color: var(--text-secondary);
+  line-height: 1.7;
+}
+
+.template-input {
+  margin-top: 6px;
+  font-family: var(--font-mono);
 }
 
 /* 表单 */

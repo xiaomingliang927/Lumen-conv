@@ -10,6 +10,7 @@
 import { computed, reactive, ref } from 'vue';
 import type {
   AppSettings,
+  CompatibilityIssue,
   ConversionOptions,
   CreateJobRequest,
   MediaJob,
@@ -25,6 +26,7 @@ import {
   CONTAINERS,
   findPreset,
 } from '@shared/presets';
+import { checkCompatibility } from '@shared/compatibility';
 import { fileExtension, predictOutputBytes } from '@/utils/format';
 
 /* ------------------------------ 类型 ------------------------------ */
@@ -66,12 +68,17 @@ export const activeView = ref<'convert' | 'queue' | 'settings'>('convert');
 /* ------------------------------ 全局转换选项 ------------------------------ */
 
 export const options = ref<ConversionOptions>({
+  // 默认落在「发微信 / QQ」这个用途上：它代表最常见的场景，
+  // 且固定 H.264 + 1080p + 100MB 上限，用户不改任何东西也能得到可用的产物
   presetId: 'mp4-compatible',
   videoCodecId: 'h264',
   audioCodecId: 'aac',
   qualityId: 'balanced',
-  resolutionId: 'source',
+  resolutionId: '1080p',
   fpsId: 'source',
+  sizeLimitMb: 100,
+  deviceId: 'any',
+  useCaseId: 'wechat',
   outputDir: null,
   fileNameTemplate: '{name}',
   overwrite: false,
@@ -83,6 +90,40 @@ export const options = ref<ConversionOptions>({
 });
 
 /* ------------------------------ 派生数据 ------------------------------ */
+
+/** 转换前兼容性检查（选错编码器 / 目标体积不可行等） */
+export const compatibilityIssues = computed<CompatibilityIssue[]>(() => {
+  const probe = activeProbe.value;
+  if (!probe) return [];
+  const preset = activePreset.value;
+  const container = CONTAINERS[preset.container];
+  const quality =
+    QUALITY_PRESETS.find((q) => q.id === options.value.qualityId) ?? QUALITY_PRESETS[2];
+  const res = RESOLUTION_PRESETS.find((r) => r.id === options.value.resolutionId);
+  try {
+    return checkCompatibility({
+      probe,
+      options: options.value,
+      targetHeight: res?.height ?? null,
+      audioBitrateKbps: options.value.audioCodecId === 'none' ? 0 : quality.audioBitrateKbps,
+    });
+  } catch (err) {
+    // 兼容性检查只是"锦上添花"，它自身出错绝不能拦住转换
+    console.error('[compatibility] 检查失败：', err);
+    void container;
+    return [];
+  }
+});
+
+/** 有没有必须处理的问题（block） */
+export const hasBlockingIssue = computed(() =>
+  compatibilityIssues.value.some((i) => i.level === 'block'),
+);
+
+/** 一键套用某个问题的修复建议 */
+export function applyCompatibilityFix(fix: Partial<ConversionOptions>): void {
+  options.value = { ...options.value, ...fix };
+}
 
 export const activeFile = computed<LoadedFile | null>(
   () => files.value.find((f) => f.path === activePath.value) ?? null,
@@ -136,6 +177,25 @@ export const predictedOutput = computed(() => {
   if (videoCodec === 'copy' || container.id === 'copy') {
     return { bytes: probe.sizeBytes, approximate: true, note: '不重新编码，体积与源文件接近' };
   }
+
+  /*
+   * 目标体积模式：预估直接就是目标值。
+   * 这也是这个功能的意义 —— 用户不用再"猜一档质量、转完看结果、不行再转一遍"。
+   */
+  if (options.value.sizeLimitMb && options.value.sizeLimitMb > 0 && container.videoCodecs.length > 0) {
+    const targetBytes = Math.round(options.value.sizeLimitMb * 1024 * 1024);
+    const duration = Math.max(0.1, probe.durationSec);
+    const totalKbps = (targetBytes * 8) / duration / 1000;
+    const audioKbps = options.value.audioCodecId === 'none' ? 0 : quality.audioBitrateKbps;
+    return {
+      bytes: targetBytes,
+      approximate: false,
+      note:
+        `按目标体积反推：总码率约 ${Math.round(totalKbps)} kbps` +
+        `（视频 ${Math.round(Math.max(50, totalKbps - audioKbps))} + 音频 ${audioKbps}），两遍编码精确命中`,
+    };
+  }
+
   if (!container.videoCodecs.length) {
     // 纯音频导出：按音频码率估算
     const hw = quality.audioBitrateKbps;

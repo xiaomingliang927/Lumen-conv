@@ -214,12 +214,49 @@ export class ConversionEngine extends EventEmitter {
 
     let lastError: ReturnType<typeof diagnoseFfmpegError> | null = null;
 
+    // 在 try 外声明：finally 里要靠它清理两遍编码的统计日志
+    let built: ReturnType<typeof buildCommand> | undefined;
+
     try {
-      const built = buildCommand(internal.options, { probe: internal.probe, outputPath: job.outputPath });
+      built = buildCommand(internal.options, { probe: internal.probe, outputPath: job.outputPath });
+
+      /* ---- 前置步骤（两遍编码的第一遍） ---- */
+      /*
+       * 两遍编码的第一遍是纯分析，没有可用的进度百分比（它不产出文件），
+       * 所以这里只上报"正在分析"的日志，进度条在主命令阶段才真正动。
+       * 由于第一遍耗时接近整个编码的一半，界面上会让进度条停在 0% 较久，
+       * 因此额外发一条说明，避免用户以为是卡住了。
+       */
+      if (built.prePasses.length > 0) {
+        this.emitLog(
+          internal,
+          `▶ 开始${built.prePasses.length} 个前置步骤（第一遍分析约占总耗时的一半，期间进度不会明显变化）`,
+        );
+        for (const pass of built.prePasses) {
+          this.emitLog(internal, `▶ ${pass.label}`);
+          this.emitLog(internal, formatCommand(this.ffmpegPath, pass.args));
+          const res = await runProcess(this.ffmpegPath, pass.args, {
+            timeoutMs: JOB_TIMEOUT_MS,
+            onStderrLine: (line) => this.emitLog(internal, line),
+          }).done;
+          if (res.canceled) {
+            await this.cleanupPartial(job.outputPath);
+            job.state = 'canceled';
+            job.finishedAt = Date.now();
+            this.emitLog(internal, '任务已取消');
+            this.emitUpdate(internal);
+            await this.cleanupPassLog(built.passLogPrefix);
+            return;
+          }
+          if (res.code !== 0 || res.spawnError) {
+            throw new Error(res.stderr || res.spawnError || `${pass.label} 失败`);
+          }
+        }
+        this.emitLog(internal, '✔ 第一遍分析完成，开始正式编码');
+      }
 
       /* ---- 主命令 ---- */
-      // GIF 的调色板两遍流程已经内联在单条命令的 split 滤镜链里，
-      // 不需要额外的前置进程，也不产生临时文件。
+      // GIF 的调色板两遍流程已经内联在单条命令的 split 滤镜链里。
       const mainArgs = built.args;
 
       this.emitLog(internal, formatCommand(this.ffmpegPath, mainArgs));
@@ -302,13 +339,45 @@ export class ConversionEngine extends EventEmitter {
         raw: job.progress?.raw ?? {},
       };
       this.emitLog(internal, `✔ 转换完成：${job.outputPath}（${formatBytes(outStat.size)}）`);
+
+      // 目标体积模式下明确告诉用户有没有命中（命中率是用户最关心的事）
+      if (built.targetSizeMb) {
+        const targetBytes = built.targetSizeMb * 1024 * 1024;
+        const diffPct = ((outStat.size - targetBytes) / targetBytes) * 100;
+        this.emitLog(
+          internal,
+          diffPct <= 0
+            ? `✔ 体积命中目标：${formatBytes(outStat.size)} ≤ ${built.targetSizeMb} MB`
+            : `⚠ 略超目标 ${diffPct.toFixed(1)}%：${formatBytes(outStat.size)} vs ${built.targetSizeMb} MB`,
+        );
+      }
       this.emitUpdate(internal);
     } catch (err) {
       if (job.state === 'canceled') return;
       const fallback = diagnoseFfmpegError(String(err), null, false, false);
       this.fail(internal, lastError ?? fallback);
     } finally {
+      // 两遍编码的统计日志（.log / .log.mbtree）必须清理，否则输出目录会留垃圾
+      await this.cleanupPassLog(built?.passLogPrefix ?? null);
       this.pump();
+    }
+  }
+
+  /**
+   * 清理两遍编码产生的统计日志。
+   * ffmpeg 会生成 `<prefix>-0.log` 与 `<prefix>-0.log.mbtree`，名字里带序号，
+   * 所以不能只删一个固定文件名，要按前缀匹配。
+   */
+  private async cleanupPassLog(prefix: string | null): Promise<void> {
+    if (!prefix) return;
+    const dir = path.dirname(prefix);
+    const base = path.basename(prefix);
+    try {
+      for (const name of await fsp.readdir(dir)) {
+        if (name.startsWith(base)) await fsp.rm(path.join(dir, name), { force: true });
+      }
+    } catch {
+      /* 目录不存在或权限不足都不影响主流程 */
     }
   }
 

@@ -266,6 +266,15 @@ export interface ConversionOptions {
   qualityId: string;
   resolutionId: string;
   fpsId: string;
+  /**
+   * 目标体积上限（MB）。设了它就走**两遍编码**精确命中，
+   * 此时 qualityId 不再参与码率决定（界面会自动禁用并说明原因）。
+   */
+  sizeLimitMb: number | null;
+  /** 播放设备 id，用于兼容性预检与参数纠偏；null = 不限定 */
+  deviceId: string | null;
+  /** 选中的用途 id，仅用于界面回显与提示 */
+  useCaseId: string | null;
   /** 输出目录；null 表示与源文件同目录 */
   outputDir: string | null;
   /** 文件名模板，支持 {name} {preset} {date} {index} */
@@ -287,6 +296,23 @@ export interface ConversionOptions {
 export interface CreateJobRequest {
   sourcePath: string;
   options: ConversionOptions;
+}
+
+/**
+ * 兼容性告警：在转换**之前**就告诉用户"这样转出来可能用不了"。
+ *
+ * 场景：用户选了 H.265 想发给老安卓电视 —— 不预检的话，用户会白等 20 分钟
+ * 才发现播不了。这是最容易让人白干一场的坑，而且完全可以在开转前拦住。
+ */
+export interface CompatibilityIssue {
+  /** 严重程度：block = 基本一定失败；warn = 可能有问题；info = 只是提醒 */
+  level: 'block' | 'warn' | 'info';
+  /** 一句话结论（面向用户，尽量不出现编码器黑话） */
+  message: string;
+  /** 可操作的建议 */
+  suggestion: string | null;
+  /** 一键修复：把选项改成建议值；null 表示无法自动修 */
+  fix: Partial<ConversionOptions> | null;
 }
 
 export interface CreateJobResult {

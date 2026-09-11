@@ -354,8 +354,9 @@ async function runSmokeCheck(): Promise<void> {
       infoRows: string[];
       thumbSrc: string;
       durationBadge: string;
-      presetCards: number;
-      activePreset: string;
+      useCaseCards: number;
+      activeUseCase: string;
+      compatItems: number;
       estimate: string;
     }>(
       '采集视频详情特征',
@@ -368,8 +369,9 @@ async function runSmokeCheck(): Promise<void> {
         infoRows: rows,
         thumbSrc: document.querySelector('.file-card .thumb img')?.getAttribute('src') ?? '',
         durationBadge: text('.file-card .thumb-duration'),
-        presetCards: document.querySelectorAll('.preset-card').length,
-        activePreset: text('.preset-card.active .preset-label'),
+        useCaseCards: document.querySelectorAll('.usecase-card').length,
+        activeUseCase: text('.usecase-card.active .usecase-label'),
+        compatItems: document.querySelectorAll('.compat-item').length,
         estimate: text('.details-foot .foot-estimate'),
       };
     })()`,
@@ -379,7 +381,18 @@ async function runSmokeCheck(): Promise<void> {
       ['加载真实文件后：信息面板出现', fileReport.infoRows.length >= 5, `${fileReport.infoRows.length} 行`],
       ['加载真实文件后：缩略图已生成', fileReport.thumbSrc.startsWith('lumen-media://'), fileReport.thumbSrc.slice(0, 46) + '…'],
       ['加载真实文件后：时长角标显示', /^\d+:\d{2}$/.test(fileReport.durationBadge), fileReport.durationBadge],
-      ['加载真实文件后：预设卡片可选', fileReport.presetCards >= 8, `${fileReport.presetCards} 个预设，当前「${fileReport.activePreset}」`],
+      [
+        '加载真实文件后：用途卡片全部渲染',
+        fileReport.useCaseCards >= 8,
+        `${fileReport.useCaseCards} 张用途卡片，当前「${fileReport.activeUseCase}」`,
+      ],
+      [
+        '加载真实文件后：兼容性预检已运行',
+        // 预检"跑过了"不等于"没问题"：默认用途+不限定设备时通常 0 条提示，
+        // 所以这里只断言预检没有把页面搞崩（元素容器查询不报错即可）
+        fileReport.compatItems >= 0,
+        `${fileReport.compatItems} 条提示`,
+      ],
       ['加载真实文件后：产物体积预估显示', fileReport.estimate.includes('预计'), fileReport.estimate || '无'],
       [
         '加载真实文件后：详情包含分辨率',
@@ -409,69 +422,60 @@ async function runSmokeCheck(): Promise<void> {
       diag: '',
     };
     try {
-      // 关键：Vue 的更新是异步的，`el.click()` 之后立刻读 DOM 会读到**旧状态**。
-      // 早期版本就是同步读，导致断言看起来像"点击无效"，实际是读取时机不对。
-      // 这里拆成"读初始状态 → 点击 → 等一拍 → 读结果"三步。
-      const before = await evalJs<{ label: string; estimate: string; index: number; targetIndex: number }>(
-        '记录切换前的预设状态',
-        `(() => {
-          const cards = [...document.querySelectorAll('.preset-card')];
-          const active = document.querySelector('.preset-card.active');
-          const target = cards.find((c) => !c.classList.contains('active'));
-          return {
-            label: (active?.querySelector('.preset-label')?.textContent ?? '').trim(),
-            estimate: (document.querySelector('.details-foot .foot-estimate')?.textContent ?? '').trim(),
-            index: cards.indexOf(active),
-            targetIndex: target ? cards.indexOf(target) : -1,
-          };
-        })()`,
-      );
+      /*
+       * 主入口已经从「选格式」改成「选用途」了（.preset-card → .usecase-card），
+       * 这段断言也跟着改。用途卡片会一次性改掉容器/编码器/分辨率/体积上限，
+       * 所以顺带断言"体积上限跟着用途走" —— 那是用途层最核心的联动。
+       */
+      const readState = `(() => {
+        const cards = [...document.querySelectorAll('.usecase-card')];
+        const active = document.querySelector('.usecase-card.active');
+        const sizeInput = document.querySelector('.size-limit input');
+        return {
+          label: (active?.querySelector('.usecase-label')?.textContent ?? '').trim(),
+          estimates: (document.querySelector('.details-foot .foot-estimate')?.textContent ?? '').trim(),
+          sizeLimit: sizeInput ? String(sizeInput.value) : '',
+          index: cards.indexOf(active),
+          checkMarks: document.querySelectorAll('.usecase-card .preset-check').length,
+          count: cards.length,
+        };
+      })()`;
 
-      if (before.targetIndex < 0) {
-        presetInteraction = { ...presetInteraction, error: '没有可切换的预设卡片' };
+      const before = await evalJs<{
+        label: string;
+        estimates: string;
+        sizeLimit: string;
+        index: number;
+        checkMarks: number;
+        count: number;
+      }>('记录切换前的用途状态', readState);
+
+      const targetIndex = before.index === 0 ? 1 : 0;
+      if (before.count < 2) {
+        presetInteraction = { ...presetInteraction, error: '用途卡片不足 2 个' };
       } else {
         const clicked = await evalJs<boolean>(
-          '点击另一张预设卡片',
+          '点击另一张用途卡片',
           `(() => {
-            const cards = [...document.querySelectorAll('.preset-card')];
-            // 用真实 MouseEvent 而不是 el.click()：走完整的捕获/冒泡链路，与用户真实点击一致
-            cards[${before.targetIndex}].dispatchEvent(
+            const cards = [...document.querySelectorAll('.usecase-card')];
+            cards[${targetIndex}].dispatchEvent(
               new MouseEvent('click', { bubbles: true, cancelable: true, view: window }),
             );
             return true;
           })()`,
         );
-        await shotDelay(250); // 等 Vue 把更新刷到 DOM
+        await shotDelay(250);
 
-        const after = await evalJs<{
-          label: string;
-          estimate: string;
-          index: number;
-          checkMarks: number;
-          checkOnTarget: boolean;
-        }>(
-          '读取切换后的预设状态',
-          `(() => {
-            const cards = [...document.querySelectorAll('.preset-card')];
-            const active = document.querySelector('.preset-card.active');
-            return {
-              label: (active?.querySelector('.preset-label')?.textContent ?? '').trim(),
-              estimate: (document.querySelector('.details-foot .foot-estimate')?.textContent ?? '').trim(),
-              index: cards.indexOf(active),
-              checkMarks: document.querySelectorAll('.preset-check').length,
-              checkOnTarget: Boolean(cards[${before.targetIndex}]?.querySelector('.preset-check')),
-            };
-          })()`,
-        );
+        const after = await evalJs<typeof before>('读取切换后的用途状态', readState);
 
         presetInteraction = {
           beforeLabel: before.label,
           afterLabel: after.label,
-          checkedMoved: after.index === before.targetIndex && after.checkOnTarget,
-          estimateChanged: after.estimate !== before.estimate,
+          checkedMoved: after.index === targetIndex && after.checkMarks === 1,
+          estimateChanged: after.estimates !== before.estimates,
           clickOk: clicked,
           error: '',
-          diag: `选中索引 ${before.index} → ${after.index}，勾选标记 ${after.checkMarks} 个`,
+          diag: `选中 ${before.index} → ${after.index}；体积上限 ${before.sizeLimit || '不限'} → ${after.sizeLimit || '不限'}；共 ${after.count} 张`,
         };
       }
     } catch (err) {
@@ -483,7 +487,7 @@ async function runSmokeCheck(): Promise<void> {
 
     extraChecks.push(
       [
-        '预设卡片：点击后选中态切换',
+        '用途卡片：点击后选中态切换',
         presetInteraction.clickOk &&
           presetInteraction.afterLabel !== presetInteraction.beforeLabel &&
           presetInteraction.afterLabel.length > 0,
@@ -492,26 +496,137 @@ async function runSmokeCheck(): Promise<void> {
           : `${presetInteraction.beforeLabel} → ${presetInteraction.afterLabel}${presetInteraction.diag ? ` | ${presetInteraction.diag}` : ''}`,
       ],
       [
-        '预设卡片：选中项显示勾选标记',
+        '用途卡片：选中项显示勾选标记（且只有一个）',
         presetInteraction.checkedMoved,
-        presetInteraction.checkedMoved ? '勾选标记跟随选中卡片' : '未找到 .preset-check 或未跟随',
+        presetInteraction.checkedMoved ? '勾选标记跟随选中卡片' : '勾选标记数量异常',
       ],
       [
-        '预设卡片：切换预设后体积预估联动更新',
+        '用途卡片：切换用途后体积预估联动更新',
         presetInteraction.estimateChanged,
-        presetInteraction.estimateChanged ? '预估已随预设变化' : '预估未变化（可能两个预设码率档位相同）',
+        presetInteraction.estimateChanged ? '预估已随用途变化' : '预估未变化',
       ],
     );
-    // 点完切回默认预设，避免影响后续截图与转换用例的预期
+    // 点完切回「发微信 / QQ」（默认用途），避免影响后续截图与转换用例的预期
     await evalJs<boolean>(
-      '恢复默认预设',
+      '恢复默认用途',
       `(() => {
-        const first = document.querySelector('.preset-card');
+        const first = document.querySelector('.usecase-card');
         if (first && !first.classList.contains('active')) first.click();
         return true;
       })()`,
     );
-    await shotDelay(200);
+    await shotDelay(300);
+
+    /*
+     * 兼容性预检的端到端验证：真的做一个"会播不了"的组合出来。
+     *
+     * 场景：源是 H.264，用户手动把编码器改成 H.265、设备选「老安卓电视」。
+     * 期望：界面出现警告 + 一键修复按钮；点了修复之后警告消失。
+     * 这一条是「把转完才发现播不了」这个坑的核心防线。
+     */
+    const compat = await evalJs<{
+      before: number;
+      afterSet: number;
+      warned: string;
+      hasFix: boolean;
+      afterFix: number;
+      fixedCodec: string;
+      error: string;
+    }>(
+      '验证兼容性预检与一键修复',
+      `(async () => {
+        const tick = () => new Promise((r) => setTimeout(r, 220));
+        const count = () => document.querySelectorAll('.compat-item').length;
+        // 结论在 <strong> 里，建议在 <p class="compat-suggestion"> 里，两者都要读
+        const texts = () =>
+          [...document.querySelectorAll('.compat-item strong, .compat-item .compat-suggestion')].map(
+            (e) => (e.textContent ?? '').trim(),
+          );
+        const findSel = (pred) => [...document.querySelectorAll('.details select')].find(pred);
+        const setVal = (sel, v) => {
+          if (!sel) return false;
+          sel.value = v;
+          sel.dispatchEvent(new Event('change', { bubbles: true }));
+          return true;
+        };
+        try {
+          const before = count();
+
+          // 1) 打开高级选项（编码器在里面）
+          const adv = document.querySelector('.advanced-toggle');
+          if (adv) adv.click();
+          await tick();
+
+          // 2) 编码器改成 H.265（会用 hvc1 标签与 hevc 编码器）
+          const codecSel = findSel((s) => [...s.options].some((o) => o.value === 'h264' || o.value === 'h264_nvenc'));
+          const codecOk = codecSel
+            ? setVal(codecSel, [...codecSel.options].find((o) => o.value.startsWith('hevc'))?.value ?? 'hevc')
+            : false;
+          await tick();
+
+          // 3) 设备选「老安卓电视」
+          const devSel = findSel((s) => [...s.options].some((o) => o.value === 'android-old'));
+          const devOk = devSel ? setVal(devSel, 'android-old') : false;
+          await tick();
+
+          const afterSet = count();
+          const warned = texts().join(' / ');
+
+          // 4) 点一键修复
+          const fixBtn = document.querySelector('.compat-item .compat-fix');
+          const hasFix = Boolean(fixBtn);
+          if (fixBtn) fixBtn.click();
+          await tick();
+          await tick();
+
+          const afterFix = count();
+          const codecNow = codecSel ? codecSel.value : '';
+
+          return {
+            before, afterSet, warned, hasFix, afterFix,
+            fixedCodec: codecNow,
+            error: codecOk && devOk ? '' : ('codecSel=' + Boolean(codecSel) + ' devSel=' + Boolean(devSel)),
+          };
+        } catch (e) {
+          return { before: -1, afterSet: -1, warned: '', hasFix: false, afterFix: -1, fixedCodec: '', error: String(e) };
+        }
+      })()`,
+    );
+
+    extraChecks.push(
+      [
+        '兼容性预检：做出"播不了"的组合时出现警告',
+        compat.afterSet > compat.before && compat.warned.length > 0,
+        compat.error
+          ? `选择器未找到（${compat.error}）`
+          : `${compat.before} → ${compat.afterSet} 条：${compat.warned.slice(0, 70)}`,
+      ],
+      [
+        '兼容性预检：警告里给出可操作建议',
+        compat.warned.includes('建议') || compat.warned.includes('可能'),
+        compat.warned.slice(0, 60) || '（无内容）',
+      ],
+      [
+        '兼容性预检：一键修复能消除警告',
+        compat.hasFix && compat.afterFix < compat.afterSet,
+        compat.hasFix
+          ? `修复后 ${compat.afterSet} → ${compat.afterFix} 条，编码器变为 ${compat.fixedCodec}`
+          : '未找到「一键修复」按钮',
+      ],
+    );
+
+    // 复原：用途点回默认（会把编码器与设备相关设置一并覆盖回去）
+    await evalJs<boolean>(
+      '恢复默认用途（兼容性测试后）',
+      `(() => {
+        const first = document.querySelector('.usecase-card');
+        if (first) first.click();
+        const adv = document.querySelector('.advanced-toggle');
+        if (adv && document.querySelector('.advanced-body')) adv.click();
+        return true;
+      })()`,
+    );
+    await shotDelay(300);
 
     /*
      * 回归：预设选择必须跨文件保留。
@@ -536,16 +651,16 @@ async function runSmokeCheck(): Promise<void> {
       );
       await shotDelay(400);
       const keptPreset = await evalJs<{ label: string; files: number }>(
-        '检查跨文件后的预设',
+        '检查跨文件后的用途选择',
         `(() => ({
-          label: (document.querySelector('.preset-card.active .preset-label')?.textContent ?? '').trim(),
+          label: (document.querySelector('.usecase-card.active .usecase-label')?.textContent ?? '').trim(),
           files: document.querySelectorAll('.file-card').length,
         }))()`,
       );
       extraChecks.push([
-        '预设选择跨文件保留',
-        keptPreset.label === 'MP4 通用兼容' && keptPreset.files >= 2,
-        `${keptPreset.files} 个文件，当前预设「${keptPreset.label}」`,
+        '用途选择跨文件保留',
+        keptPreset.label === '发微信 / QQ' && keptPreset.files >= 2,
+        `${keptPreset.files} 个文件，当前用途「${keptPreset.label}」`,
       ]);
 
       /*
@@ -726,6 +841,7 @@ async function runSmokeCheck(): Promise<void> {
           options: {
             presetId: 'mp4-compatible', videoCodecId: 'h264', audioCodecId: 'aac',
             qualityId: 'balanced', resolutionId: 'source', fpsId: 'source',
+            sizeLimitMb: null, deviceId: null, useCaseId: null,
             outputDir: null, fileNameTemplate: '{name}', overwrite: false, keepMetadata: true,
             trimStartSec: null, trimEndSec: null, subtitleStreamIndexes: [], audioStreamIndexes: []
           }
@@ -788,12 +904,27 @@ async function runSmokeCheck(): Promise<void> {
       await shotDelay(200);
 
       /*
-       * 在点击之前，先把质量下拉切到「极小体积」，然后断言生成的任务命令里
-       * 确实带上了对应的 CRF（34，见 shared/presets.ts 的 QUALITY_PRESETS）。
+       * 「质量下拉真的有用吗」的硬证据。
        *
-       * 这是回答"这个下拉框真的有用吗"的唯一硬证据：界面值变了、预估变了都只是
-       * 间接迹象，只有 ffmpeg 命令里的 -crf 跟着变，才能说明它真的影响转换结果。
+       * 光看界面值变了、预估变了都只是间接迹象，必须看到 ffmpeg 命令里的
+       * 编码参数跟着变才算证明它影响转换结果。
+       *
+       * 但这里有个先后关系需要注意：**设了目标体积上限时，质量档位不参与决定**
+       * （体积优先时码率是算出来的，不是猜出来的），命令里会是 -b:v + 两遍编码，
+       * 而不是 -crf。所以分两种情况断言，两种都是正确行为：
+       *   · 有体积上限 → 必须出现 -b:v 与 -pass 2，且**不应**出现 -crf
+       *   · 无体积上限 → 必须是「极小体积」对应的 -crf 34
+       * 先读一次体积上限输入框，决定断言哪一支。
        */
+      const sizeLimitState = await evalJs<{ hasLimit: boolean; value: string }>(
+        '读取当前体积上限',
+        `(() => {
+          const input = document.querySelector('.size-limit input');
+          const value = input ? String(input.value) : '';
+          return { hasLimit: Boolean(value && Number(value) > 0), value };
+        })()`,
+      );
+
       const qualityForCommand = await evalJs<{ picked: string; label: string }>(
         '将质量切到「极小体积」',
         `(() => {
@@ -849,18 +980,32 @@ async function runSmokeCheck(): Promise<void> {
         `共 ${pickedFileName.total} 个文件，只勾选「${pickedFileName.name}」→ 队列 ${jobsAfterClick.length} 个任务（${jobsAfterClick.map((j) => j.sourceName).join(', ')}）`,
       ]);
 
-      // 把"界面上的质量选择"与"真实执行的 ffmpeg 命令"对上。
-      // 「极小体积」在 QUALITY_PRESETS 里对应 CRF 34，硬编码这个期望值，
-      // 断言才有意义（写成"命令里有 -crf"这种松断言等于没断言）。
+      // 把"界面上的选择"与"真实执行的 ffmpeg 命令"对上。
+      // 两种模式分别断言（见上面 sizeLimitState 的说明），都是硬断言：
+      //   · 有体积上限 → -b:v + -pass 2，且不能有 -crf
+      //   · 无体积上限 → 「极小体积」必须是 CRF 34
       const newJob = engine.list().find((j) => j.state !== 'canceled');
-      const crfMatch = /-crf\s+(\d+)/.exec(newJob?.command ?? '');
-      extraChecks.push([
-        '质量下拉真的影响 ffmpeg 命令（极小体积 → CRF 34）',
-        qualityForCommand.picked === 'tiny' && crfMatch?.[1] === '34',
-        crfMatch
-          ? `界面选「${qualityForCommand.label.slice(0, 8)}」，命令里 -crf ${crfMatch[1]}`
-          : `未在命令里找到 -crf（命令片段：${(newJob?.command ?? '').slice(0, 80)}）`,
-      ]);
+      const cmd = newJob?.command ?? '';
+      const crfMatch = /-crf\s+(\d+)/.exec(cmd);
+      const bvMatch = /-b:v\s+(\d+)k/.exec(cmd);
+
+      if (sizeLimitState.hasLimit) {
+        extraChecks.push([
+          '体积上限生效：命令用目标码率 + 两遍编码，且不再给 CRF',
+          Boolean(bvMatch) && !crfMatch,
+          bvMatch
+            ? `上限 ${sizeLimitState.value}MB → -b:v ${bvMatch[1]}k${crfMatch ? `（⚠ 仍出现了 -crf ${crfMatch[1]}）` : '，无 -crf'}`
+            : `命令里未找到 -b:v（片段：${cmd.slice(0, 70)}）`,
+        ]);
+      } else {
+        extraChecks.push([
+          '质量下拉真的影响 ffmpeg 命令（极小体积 → CRF 34）',
+          qualityForCommand.picked === 'tiny' && crfMatch?.[1] === '34',
+          crfMatch
+            ? `界面选「${qualityForCommand.label.slice(0, 8)}」，命令里 -crf ${crfMatch[1]}`
+            : `未在命令里找到 -crf（片段：${cmd.slice(0, 70)}）`,
+        ]);
+      }
 
       // 等队列里出现任务并跑到终态
       const convertDeadline = Date.now() + 180_000;

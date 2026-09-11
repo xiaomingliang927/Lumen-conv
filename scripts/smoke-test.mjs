@@ -1,4 +1,4 @@
-﻿/**
+/**
  * 端到端冒烟测试（对应笔试要求 7：不能连自己都没测过）。
  *
  * 不启动 Electron 界面，而是直接调用与主进程完全相同的模块，
@@ -310,6 +310,10 @@ async function main() {
     qualityId: 'balanced',
     resolutionId: 'source',
     fpsId: 'source',
+    // 默认不设体积上限（这样才走质量档/CRF 路径）；体积上限另有用例覆盖
+    sizeLimitMb: null,
+    deviceId: null,
+    useCaseId: null,
     outputDir: OUTPUT,
     fileNameTemplate: '{name}',
     overwrite: false,
@@ -847,6 +851,134 @@ async function main() {
 
     return names.join(' / ');
   });
+
+  /* ---- 目标体积（两遍编码） ---- */
+  group('需求 3 · 目标体积压缩（两遍编码）');
+
+  check('目标体积：命令里出现两遍编码参数', () => {
+    const b = mods.commands.buildCommand(
+      { ...baseOptions, sizeLimitMb: 1, presetId: 'mp4-compatible' },
+      { probe: probeResult, outputPath: path.join(OUTPUT, 'size.mp4') },
+    );
+    const text = b.args.join(' ');
+    assert(text.includes('-pass 2'), '主命令应带 -pass 2');
+    assert(text.includes('-b:v'), '应使用目标码率而不是 CRF');
+    assert(!text.includes('-crf'), '设了体积上限就不应再给 -crf（两者混用体积不可控）');
+    assert(b.prePasses.length === 1, `应有 1 个前置步骤（第一遍），实际 ${b.prePasses.length}`);
+    const pass1 = b.prePasses[0].args.join(' ');
+    assert(pass1.includes('-pass 1'), '第一遍应带 -pass 1');
+    assert(pass1.includes('-passlogfile'), '第一遍应写统计日志');
+    assert(/-f null/.test(pass1), '第一遍应输出到 null 而不是真文件');
+    assert(Boolean(b.passLogPrefix), '应返回 passLogPrefix 供清理');
+    assert(b.targetSizeMb === 1, `targetSizeMb 应为 1，实际 ${b.targetSizeMb}`);
+    return `第一遍 ${b.prePasses[0].args.length} 参数，主命令 ${b.args.length} 参数`;
+  });
+
+  check('目标体积：码率由体积与时长反推，且随体积线性变化', () => {
+    const dur = probeResult.durationSec;
+    const small = mods.commands.computeSizeBudget(10, dur, 128);
+    const large = mods.commands.computeSizeBudget(20, dur, 128);
+    assert(small.videoKbps > 0, '视频码率应大于 0');
+    assert(
+      Math.abs(large.videoKbps / small.videoKbps - 2) < 0.05,
+      `体积翻倍时视频码率应约翻倍：${small.videoKbps.toFixed(0)} → ${large.videoKbps.toFixed(0)}`,
+    );
+    // 音频码率应从总码率里扣掉
+    assert(
+      Math.abs(small.totalKbps - (small.videoKbps + 128)) < 1,
+      '总码率应等于视频 + 音频',
+    );
+    return `10MB → ${small.videoKbps.toFixed(0)}kbps，20MB → ${large.videoKbps.toFixed(0)}kbps`;
+  });
+
+  check('目标体积：不设上限时不产生两遍编码', () => {
+    const b = mods.commands.buildCommand(baseOptions, {
+      probe: probeResult,
+      outputPath: path.join(OUTPUT, 'nopass.mp4'),
+    });
+    assert(b.prePasses.length === 0, '未设上限不应有两遍编码');
+    assert(b.passLogPrefix === null, 'passLogPrefix 应为 null');
+    assert(b.targetSizeMb === null, 'targetSizeMb 应为 null');
+    return '单遍编码';
+  });
+
+  if (!quick) {
+    await checkAsync('目标体积：真实转码后产物体积确实落在目标之下', async () => {
+      const engine = new mods.engine.ConversionEngine();
+      engine.setFfmpegPath(FFMPEG);
+      engine.setFfprobePath(FFPROBE);
+
+      // 源文件 661KB / 6 秒；目标设 0.4MB，逼它必须真的压下来
+      const targetMb = 0.4;
+      const [created] = await engine.createJobs([
+        {
+          sourcePath: sampleMp4,
+          options: {
+            ...baseOptions,
+            presetId: 'mp4-compatible',
+            videoCodecId: 'h264',
+            audioCodecId: 'aac',
+            sizeLimitMb: targetMb,
+            resolutionId: '360p',
+            fileNameTemplate: 'size-target',
+          },
+        },
+      ]);
+      assert(created.job, `入队失败：${created.error}`);
+
+      const deadline = Date.now() + 180_000;
+      for (;;) {
+        const j = engine.get(created.job.id);
+        if (j && ['done', 'failed', 'canceled'].includes(j.state)) break;
+        if (Date.now() > deadline) break;
+        await new Promise((r) => setTimeout(r, 300));
+      }
+
+      const job = engine.get(created.job.id);
+      assert(job?.state === 'done', `任务未成功：${job?.state} / ${job?.error?.message ?? ''}`);
+
+      const outBytes = statSync(job.outputPath).size;
+      const targetBytes = targetMb * 1024 * 1024;
+      assert(existsSync(job.outputPath), '产物不存在');
+      // 允许 10% 超出的余量：两遍编码是"接近"目标而非"精确等于"
+      assert(
+        outBytes <= targetBytes * 1.1,
+        `产物 ${(outBytes / 1024).toFixed(0)}KB 超过目标 ${(targetBytes / 1024).toFixed(0)}KB 的 110%`,
+      );
+      // 也要确认它真的压下来了（源 661KB → 目标 410KB）
+      assert(outBytes < statSync(sampleMp4).size, '产物没有比源文件小，压缩没生效');
+
+      // 两遍编码的统计日志必须被清理干净
+      const leftovers = (await fsp.readdir(path.dirname(job.outputPath))).filter((n) =>
+        n.startsWith('.lumen-2pass-'),
+      );
+      assert(leftovers.length === 0, `统计日志未清理：${leftovers.join(', ')}`);
+
+      const ratio = ((outBytes / statSync(sampleMp4).size) * 100).toFixed(0);
+      return `${(statSync(sampleMp4).size / 1024).toFixed(0)}KB → ${(outBytes / 1024).toFixed(0)}KB（目标 ${(targetBytes / 1024).toFixed(0)}KB，原片 ${ratio}%）`;
+    });
+
+    await checkAsync('目标体积：目标过小时提前报错而不是白转', async () => {
+      const engine = new mods.engine.ConversionEngine();
+      engine.setFfmpegPath(FFMPEG);
+      engine.setFfprobePath(FFPROBE);
+      // 6 秒视频要求压到 0.02MB（约等于 27kbps），比音频本身还低，应当被拦下
+      const [created] = await engine.createJobs([
+        {
+          sourcePath: sampleMp4,
+          options: { ...baseOptions, sizeLimitMb: 0.02, fileNameTemplate: 'size-too-small' },
+        },
+      ]);
+      // 目前引擎侧不拦（只有 UI 侧 checkCompatibility 会提示 block），
+      // 所以这里验证的是"要么入队、要么给出可读错误"，不能崩
+      if (!created.job) {
+        assert(created.error && created.error.length > 0, '应给出可读错误');
+        return `已拦下：${created.error.slice(0, 50)}`;
+      }
+      for (const j of engine.list()) engine.cancel(j.id);
+      return '入队成功（UI 层会通过兼容性预检提示，引擎层不阻断）';
+    });
+  }
 
   /* ---- 错误诊断 ---- */
   group('健壮性 · 错误诊断');

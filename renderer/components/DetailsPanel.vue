@@ -20,7 +20,9 @@ import {
   activeFile,
   activePreset,
   activeProbe,
+  applyCompatibilityFix,
   clearActiveOverride,
+  compatibilityIssues,
   effectiveOptions,
   encoderAvailability,
   options,
@@ -32,6 +34,7 @@ import {
 } from '@/composables/useStore';
 import type { ConversionOptions } from '@shared/types';
 import { CONTAINERS, VIDEO_CODECS, AUDIO_CODECS } from '@shared/presets';
+import { DEVICES, USE_CASES, findDevice, findUseCase } from '@shared/use-cases';
 import {
   fileExtension,
   formatBitrate,
@@ -49,7 +52,7 @@ const advancedOpen = ref(false);
 /**
  * 参数变更分两类处理，这个区分很重要（是一个真实 bug 的教训）：
  *
- * - **全局偏好**（质量 / 分辨率 / 帧率 / 编码器 / 音频编码 / 文件名模板）：
+ * - **全局偏好**（用途 / 质量 / 分辨率 / 帧率 / 编码器 / 音频编码 / 文件名模板）：
  *   表达的是"我想把视频转成什么样"，属于跨文件复用的意图。
  *   早期实现把它们都写进了 setActiveOverride()（按文件覆盖），后果是
  *   **用户调好的参数一换文件就全丢**，而界面上看不出任何征兆。
@@ -65,6 +68,37 @@ const setGlobal = (patch: Partial<ConversionOptions>): void => {
 
 /** 写当前文件的专属设置 */
 const setLocal = (patch: Partial<ConversionOptions>): void => setActiveOverride(patch);
+
+/** 体积上限输入：空字符串 / 0 / 负数都视为"不限制" */
+function setSizeLimit(raw: string): void {
+  const n = Number(raw);
+  setGlobal({ sizeLimitMb: raw.trim() === '' || !Number.isFinite(n) || n <= 0 ? null : n });
+}
+
+/**
+ * 选择用途：一次把容器、编码器、分辨率、质量、体积上限都设好。
+ * 这是"用户只说他要干什么、技术决策由软件负责"的核心入口。
+ */
+function chooseUseCase(id: string): void {
+  const uc = findUseCase(id);
+  if (!uc) return;
+  const preset = CONVERSION_PRESETS.find((x) => x.id === uc.presetId);
+  if (!preset) return;
+  // 用途里若有编码器硬约束（例如"发微信"必须 H.264），优先用约束值
+  const videoCodecId = uc.requiresCodec ?? preset.videoCodecId ?? 'none';
+  setGlobal({
+    useCaseId: uc.id,
+    presetId: preset.id,
+    videoCodecId,
+    audioCodecId: preset.audioCodecId,
+    qualityId: uc.qualityId,
+    resolutionId: uc.resolutionId,
+    sizeLimitMb: uc.sizeLimitMb,
+    subtitleStreamIndexes: [],
+    audioStreamIndexes: [],
+  });
+  // 用途与当前设备冲突时，顺手把设备相关的问题一并提醒（compatibilityIssues 会自动算）
+}
 
 /**
  * 当前文件的生效值（全局偏好 + 本文件覆盖），所有控件都用它回显。
@@ -95,6 +129,20 @@ const presetGroups = computed(() => {
     }))
     .filter((g) => g.items.length > 0);
 });
+
+/** 当前用途（用于展示说明与提示） */
+const activeUseCase = computed(() => findUseCase(options.value.useCaseId) ?? null);
+
+/** 当前播放设备（用于展示说明） */
+const activeDevice = computed(() => findDevice(options.value.deviceId) ?? null);
+
+/** 高级选项里的容器/格式下拉：按分组列出全部预设 */
+const presetOptions = computed(() =>
+  presetGroups.value.map((g) => ({
+    group: g.title,
+    items: g.items.map((p) => ({ id: p.id, label: p.label })),
+  })),
+);
 
 /** 当前预设允许的编码器（并按硬件可用性标注） */
 const codecChoices = computed(() => {
@@ -325,63 +373,129 @@ void VIDEO_CODECS;
       </section>
 
       <!-- ② 输出格式 -->
+      <!-- ② 要拿去干什么（主决策） -->
       <section class="block">
         <header class="block-head">
-          <h4>输出格式</h4>
-          <button v-if="hasOverride" class="btn btn-sm btn-ghost" @click="resetToGlobal">
-            恢复全局设置
-          </button>
+          <h4>你要拿去干什么</h4>
+          <span class="muted">选一个用途就够了，细节我来定</span>
         </header>
 
-        <div v-for="group in presetGroups" :key="group.key" class="preset-group">
-          <div class="group-title">
-            <span>{{ group.title }}</span>
-            <span class="muted">{{ group.desc }}</span>
-          </div>
-          <div class="preset-grid">
+        <div class="usecase-grid">
+          <button
+            v-for="uc in USE_CASES"
+            :key="uc.id"
+            class="usecase-card"
+            :class="{ active: options.useCaseId === uc.id }"
+            :aria-pressed="options.useCaseId === uc.id"
+            :title="uc.description"
+            @click="chooseUseCase(uc.id)"
+          >
+            <span class="usecase-label">{{ uc.label }}</span>
+            <span v-if="uc.sizeLimitMb" class="chip usecase-chip">≤{{ uc.sizeLimitMb }}MB</span>
+            <span v-else-if="uc.presetId === 'remux-copy'" class="chip usecase-chip">秒转</span>
+            <span v-if="options.useCaseId === uc.id" class="preset-check" aria-hidden="true">
+              <svg viewBox="0 0 14 14" width="11" height="11">
+                <path
+                  d="M2.5 7.5 5.5 10.5 11.5 3.5"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                />
+              </svg>
+            </span>
+          </button>
+        </div>
+
+        <p v-if="activeUseCase" class="usecase-desc">{{ activeUseCase.description }}</p>
+        <div v-if="activeUseCase?.tip" class="alert alert-info preset-tip">
+          <span>💡</span><span>{{ activeUseCase.tip }}</span>
+        </div>
+
+        <!-- 兼容性预检：把"转完才发现用不了"的坑提前拦住 -->
+        <div v-if="compatibilityIssues.length > 0" class="compat-list">
+          <div
+            v-for="(issue, i) in compatibilityIssues"
+            :key="i"
+            class="alert compat-item"
+            :class="{
+              'alert-danger': issue.level === 'block',
+              'alert-warning': issue.level === 'warn',
+              'alert-info': issue.level === 'info',
+            }"
+          >
+            <span>{{ issue.level === 'block' ? '⛔' : issue.level === 'warn' ? '⚠️' : 'ℹ️' }}</span>
+            <div class="compat-body">
+              <strong>{{ issue.message }}</strong>
+              <p v-if="issue.suggestion" class="compat-suggestion">{{ issue.suggestion }}</p>
+            </div>
             <button
-              v-for="preset in group.items"
-              :key="preset.id"
-              class="preset-card"
-              :class="{ active: activePreset.id === preset.id }"
-              :aria-pressed="activePreset.id === preset.id"
-              :title="`选择「${preset.label}」`"
-              @click="choosePreset(preset.id)"
+              v-if="issue.fix"
+              class="btn btn-sm compat-fix"
+              @click="applyCompatibilityFix(issue.fix)"
             >
-              <div class="preset-top">
-                <span class="preset-label">{{ preset.label }}</span>
-                <!-- 右侧是「输出容器」标签，不是按钮：整张卡片才是可点区域。
-                     加 title 说明它的含义，避免被误认为是下拉入口。 -->
-                <span
-                  class="chip chip-container"
-                  :title="`输出容器：${CONTAINERS[preset.container].label}（${CONTAINERS[preset.container].description}）`"
-                >
-                  {{ CONTAINERS[preset.container].label }}
-                </span>
-                <span v-if="activePreset.id === preset.id" class="preset-check" aria-hidden="true">
-                  <svg viewBox="0 0 14 14" width="11" height="11">
-                    <path
-                      d="M2.5 7.5 5.5 10.5 11.5 3.5"
-                      fill="none"
-                      stroke="currentColor"
-                      stroke-width="2"
-                      stroke-linecap="round"
-                      stroke-linejoin="round"
-                    />
-                  </svg>
-                </span>
-              </div>
-              <p class="preset-desc">{{ preset.description }}</p>
+              一键修复
             </button>
           </div>
         </div>
+      </section>
 
-        <div v-if="activePreset.tip" class="alert alert-info preset-tip">
-          <span>💡</span><span>{{ activePreset.tip }}</span>
+      <!-- ③ 播放在什么设备上 + 体积上限 -->
+      <section class="block">
+        <header class="block-head">
+          <h4>在哪播 / 多大体积</h4>
+        </header>
+
+        <div class="field-grid">
+          <label class="field">
+            <span class="field-label">播放设备</span>
+            <select
+              class="select"
+              :value="options.deviceId ?? 'any'"
+              @change="setGlobal({ deviceId: ($event.target as HTMLSelectElement).value })"
+            >
+              <option v-for="d in DEVICES" :key="d.id" :value="d.id">{{ d.label }}</option>
+            </select>
+            <span class="field-hint">
+              {{ activeDevice?.note ?? '用于提前检查转出来的文件能不能播' }}
+            </span>
+          </label>
+
+          <label class="field">
+            <span class="field-label">目标体积上限</span>
+            <div class="size-limit">
+              <input
+                class="input mono"
+                type="number"
+                min="0"
+                step="10"
+                placeholder="不限"
+                :value="options.sizeLimitMb ?? ''"
+                @input="setSizeLimit(($event.target as HTMLInputElement).value)"
+              />
+              <span class="muted">MB</span>
+              <button
+                v-if="options.sizeLimitMb"
+                class="btn btn-sm btn-ghost"
+                title="取消体积上限，回到按质量档转换"
+                @click="setGlobal({ sizeLimitMb: null })"
+              >
+                不限
+              </button>
+            </div>
+            <span class="field-hint">
+              {{
+                options.sizeLimitMb
+                  ? '用两遍编码精确命中，耗时约为普通转换的两倍'
+                  : '填一个数字即可按目标体积压缩（例如微信常用 100MB）'
+              }}
+            </span>
+          </label>
         </div>
       </section>
 
-      <!-- ③ 质量与尺寸 -->
+      <!-- ④ 质量与尺寸（体积上限开启时，质量档位不参与决定） -->
       <section class="block">
         <header class="block-head">
           <h4>质量与尺寸</h4>
@@ -391,13 +505,18 @@ void VIDEO_CODECS;
           </span>
         </header>
 
+        <div v-if="options.sizeLimitMb" class="alert alert-info size-limit-note">
+          <span>ℹ️</span>
+          <span>已按目标体积反推码率，<strong>质量档位不再参与决定</strong>（体积优先时码率是算出来的，不是猜出来的）</span>
+        </div>
+
         <div class="field-grid">
           <label class="field">
             <span class="field-label">质量</span>
             <select
               class="select"
               :value="eff.qualityId"
-              :disabled="isRemux"
+              :disabled="isRemux || Boolean(options.sizeLimitMb)"
               @change="setGlobal({ qualityId: ($event.target as HTMLSelectElement).value })"
             >
               <option v-for="q in QUALITY_PRESETS" :key="q.id" :value="q.id">
@@ -405,6 +524,9 @@ void VIDEO_CODECS;
               </option>
             </select>
             <span v-if="isRemux" class="field-hint">直通模式不重新编码，质量档位无效</span>
+            <span v-else-if="options.sizeLimitMb" class="field-hint">
+              已设体积上限，码率由目标体积反推
+            </span>
           </label>
 
           <label v-if="!isAudioOnly" class="field">
@@ -446,6 +568,23 @@ void VIDEO_CODECS;
         </button>
 
         <div v-if="advancedOpen" class="advanced-body">
+          <!-- 用途已经把常用组合包好了；这里给"我就想自己指定容器"的用户留出口 -->
+          <label class="field">
+            <span class="field-label">输出格式（手动指定）</span>
+            <select
+              class="select"
+              :value="options.presetId"
+              @change="choosePreset(($event.target as HTMLSelectElement).value)"
+            >
+              <optgroup v-for="g in presetOptions" :key="g.group" :label="g.group">
+                <option v-for="p in g.items" :key="p.id" :value="p.id">{{ p.label }}</option>
+              </optgroup>
+            </select>
+            <span class="field-hint">
+              手动改格式会覆盖所选用途的推荐设置；改完可以再点一次用途卡片恢复
+            </span>
+          </label>
+
           <div class="field-grid">
             <label v-if="!isAudioOnly && codecChoices.length" class="field">
               <span class="field-label">视频编码器</span>
@@ -750,6 +889,117 @@ void VIDEO_CODECS;
 }
 .preset-tip {
   margin-top: 4px;
+}
+
+/* ---------- 用途卡片（主入口） ---------- */
+
+.usecase-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+}
+
+.usecase-card {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 9px 10px;
+  border-radius: var(--radius);
+  border: 1px solid var(--border-subtle);
+  border-left-width: 3px;
+  border-left-color: transparent;
+  background: var(--bg-elevated);
+  cursor: pointer;
+  text-align: left;
+  transition: border-color 0.12s, background 0.12s, transform 0.06s;
+}
+.usecase-card:hover {
+  border-color: var(--border-strong);
+  background: var(--bg-hover);
+}
+.usecase-card:active {
+  transform: translateY(1px);
+}
+.usecase-card:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+.usecase-card.active {
+  border-color: var(--accent);
+  border-left-color: var(--accent);
+  background: var(--accent-dim);
+}
+
+.usecase-label {
+  font-weight: 600;
+  font-size: 12.5px;
+  flex: 1;
+  min-width: 0;
+}
+
+.usecase-chip {
+  flex: none;
+  font-size: 10.5px;
+  height: 18px;
+}
+
+.usecase-desc {
+  margin: 8px 0 0;
+  font-size: 11.5px;
+  color: var(--text-secondary);
+  line-height: 1.55;
+}
+
+/* ---------- 兼容性提示 ---------- */
+
+.compat-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 10px;
+}
+
+.compat-item {
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.compat-body {
+  flex: 1;
+  min-width: 0;
+}
+.compat-body strong {
+  font-size: 12.5px;
+  display: block;
+}
+.compat-suggestion {
+  margin: 3px 0 0;
+  font-size: 11.5px;
+  color: var(--text-secondary);
+  line-height: 1.55;
+}
+
+.compat-fix {
+  flex: none;
+  align-self: flex-start;
+}
+
+/* ---------- 体积上限 ---------- */
+
+.size-limit {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.size-limit .input {
+  width: 88px;
+  flex: none;
+  text-align: right;
+}
+
+.size-limit-note {
+  margin-bottom: 10px;
+  align-items: flex-start;
 }
 
 /* 表单 */

@@ -31,15 +31,29 @@ export interface BuildContext {
   outputPath: string;
 }
 
+/** 额外步骤（两遍编码的第一遍等） */
+export interface ExtraPass {
+  /** 展示用的名字 */
+  label: string;
+  /** 完整参数（含输出） */
+  args: string[];
+}
+
 export interface BuiltCommand {
   /** 主命令参数（不含可执行文件本身） */
   args: string[];
   /** 主命令的完整可读文本，用于展示与复制 */
   commandText: string;
+  /** 需要先执行的额外步骤（例如两遍编码的第一遍） */
+  prePasses: ExtraPass[];
   /** 供 UI 提示的说明（如「已自动纠正旋转」） */
   notes: string[];
   /** 预估输出码率 kbps，用于磁盘空间预检与进度估算 */
   estimatedBitrateKbps: number;
+  /** 两遍编码的日志前缀文件路径（执行完需清理，null 表示不是两遍编码） */
+  passLogPrefix: string | null;
+  /** 实际使用的目标体积（MB），用于结果提示；null 表示不限制 */
+  targetSizeMb: number | null;
 }
 
 export class CommandBuildError extends Error {
@@ -127,6 +141,56 @@ export function toCommandText(bin: string, args: string[]): string {
   return [quoteArg(bin), ...args.map(quoteArg)].join(' ');
 }
 
+/* ------------------------- 目标体积 → 码率 ------------------------- */
+
+/** 容器封装的开销系数：实际产物会比"码率 × 时长"略大一点，留 2% 余量 */
+const SIZE_SAFETY = 0.98;
+
+export interface SizeBudget {
+  /** 目标体积（MB） */
+  targetMb: number;
+  /** 总码率（kbps）= 视频 + 音频 */
+  totalKbps: number;
+  /** 给视频的码率（kbps） */
+  videoKbps: number;
+  /** 音频占用（kbps） */
+  audioKbps: number;
+}
+
+/**
+ * 由目标体积反推码率。
+ *
+ * 公式：目标字节 = (视频码率 + 音频码率) / 8 × 时长
+ * 所以 总码率(kbps) = 目标MB × 8 × 1024 / 时长秒。
+ *
+ * 为什么用两遍编码而不是"猜一个 CRF"：
+ *   CRF 只能控制"质量档"，无法控制"体积" —— 同一档位在不同内容上产出的体积
+ *   能差好几倍。用户要的是"压到 100MB 以内"，这是个硬约束，只有两遍编码能精确命中。
+ */
+export function computeSizeBudget(
+  targetMb: number,
+  durationSec: number,
+  audioKbps: number,
+): SizeBudget {
+  const safeMb = Math.max(0.1, targetMb) * SIZE_SAFETY;
+  const totalKbps = (safeMb * 8 * 1024) / Math.max(0.1, durationSec);
+  return {
+    targetMb,
+    totalKbps,
+    videoKbps: Math.max(50, totalKbps - audioKbps),
+    audioKbps,
+  };
+}
+
+/** 目标体积下建议的分辨率高度（码率不足时降分辨率比硬压更耐看） */
+export function suggestHeightFor(videoKbps: number): number {
+  // 经验阈值：H.264 在 1080p 大约需要 2.4Mbps 才算"看着舒服"，按面积线性外推
+  if (videoKbps >= 2400) return 1080;
+  if (videoKbps >= 1100) return 720;
+  if (videoKbps >= 500) return 480;
+  return 360;
+}
+
 /* ------------------------- 视频参数 ------------------------- */
 
 interface VideoPlan {
@@ -143,6 +207,8 @@ function buildVideoArgs(
   source: VideoStreamInfo,
   quality: ReturnType<typeof findQuality>,
   resolutionHeight: number | null,
+  /** 目标体积下的视频码率预算；null = 按质量档（CRF）走 */
+  sizeBudget: SizeBudget | null,
 ): VideoPlan {
   const codecId = options.videoCodecId;
   const encoder = VIDEO_ENCODER_NAME[codecId];
@@ -265,6 +331,41 @@ function buildVideoArgs(
       estimatedBitrateKbps: 0,
       verify: null,
     };
+  }
+
+  /*
+   * 体积优先模式：用目标码率 + 两遍编码。
+   *
+   * 顺序很重要：这一段必须在 CRF 分支之前处理，且不能与 CRF 混用 ——
+   * 同时给 -crf 和 -b:v 时 ffmpeg 的行为是"以 -b:v 为上限做 CRF"，
+   * 结果体积依然不可控。所以设了目标体积就**只给码率**。
+   */
+  if (sizeBudget) {
+    const vk = Math.round(sizeBudget.videoKbps);
+    estimatedBitrateKbps = vk;
+
+    if (hwCodec) {
+      // 硬件编码器一样支持两遍编码（用 -b:v 走 VBR）
+      args.push('-b:v', `${vk}k`, '-maxrate', `${Math.round(vk * 1.5)}k`, '-bufsize', `${vk * 2}k`);
+      notes.push(`按目标体积约束码率（${vk} kbps），硬件编码仍为单遍`);
+    } else {
+      args.push(
+        '-b:v', `${vk}k`,
+        '-maxrate', `${Math.round(vk * 1.5)}k`,
+        '-bufsize', `${vk * 2}k`,
+        // 两遍编码：第一遍只分析并写日志，第二遍按日志精确分配码率
+        '-pass', '2',
+      );
+      if (container === 'mp4') {
+        args.push('-movflags', '+faststart');
+      }
+      return { args, notes, estimatedBitrateKbps, verify: null };
+    }
+
+    if (container === 'mp4') {
+      args.push('-movflags', '+faststart');
+    }
+    return { args, notes, estimatedBitrateKbps, verify: null };
   }
 
   if (hwCodec) {
@@ -494,14 +595,39 @@ export function buildCommand(options: ConversionOptions, ctx: BuildContext): Bui
   /* ---- 流映射 ---- */
   args.push(...buildStreamMapping(probe, options, container, options.videoCodecId, notes));
 
+  /* ---- 音频编码 ---- */
+  // 注意：音频要先算，因为目标体积的预算需要知道音频占掉多少码率
+  const audioPlan = buildAudioArgs(options, probe, quality, notes);
+
+  /* ---- 目标体积预算（可选） ---- */
+  const isAudioOnlyPreset = container === 'mp3' || container === 'm4a';
+  const wantsSizeLimit =
+    typeof options.sizeLimitMb === 'number' && options.sizeLimitMb > 0 && !isAudioOnlyPreset;
+
+  const effectiveDuration = (() => {
+    const start = options.trimStartSec ?? 0;
+    const end = options.trimEndSec ?? probe.durationSec;
+    const d = (end ?? probe.durationSec) - start;
+    return d > 0 ? d : probe.durationSec;
+  })();
+
+  let sizeBudget: SizeBudget | null = null;
+  if (wantsSizeLimit && effectiveDuration > 0) {
+    sizeBudget = computeSizeBudget(options.sizeLimitMb as number, effectiveDuration, audioPlan.estimatedBitrateKbps);
+    notes.push(
+      `目标体积 ${options.sizeLimitMb} MB → 反推总码率 ${Math.round(sizeBudget.totalKbps)} kbps` +
+        `（视频 ${Math.round(sizeBudget.videoKbps)} + 音频 ${Math.round(sizeBudget.audioKbps)}）`,
+    );
+  }
+
   /* ---- 视频编码 ---- */
   let videoPlan: VideoPlan | null = null;
-  if (options.videoCodecId && container !== 'mp3' && container !== 'm4a') {
+  if (options.videoCodecId && !isAudioOnlyPreset) {
     const source = probe.video.find((v) => !v.isAttachedPic) ?? probe.video[0];
     if (!source) {
       throw new CommandBuildError('源文件没有视频轨道', 'invalid-input', '请改用「导出音频」类预设');
     }
-    videoPlan = buildVideoArgs(options, container, source, quality, resolution.height);
+    videoPlan = buildVideoArgs(options, container, source, quality, resolution.height, sizeBudget);
     if (videoPlan.verify) {
       // 直通时的容器兼容性预检失败：立刻抛出人话错误，别让用户等到最后才失败
       throw new CommandBuildError(
@@ -514,8 +640,6 @@ export function buildCommand(options: ConversionOptions, ctx: BuildContext): Bui
     notes.push(...videoPlan.notes);
   }
 
-  /* ---- 音频编码 ---- */
-  const audioPlan = buildAudioArgs(options, probe, quality, notes);
   args.push(...audioPlan.args);
 
   /* ---- 元数据 ---- */
@@ -526,23 +650,79 @@ export function buildCommand(options: ConversionOptions, ctx: BuildContext): Bui
   }
   args.push('-map_chapters', options.keepMetadata ? '0' : '-1');
 
+  /*
+   * 两遍编码的统计日志：**必须放在输出文件之前**。
+   *
+   * 这是一个真实的踩坑：`-passlogfile` 是输出侧选项，如果 push 到输出路径之后，
+   * ffmpeg 会把它当"另一个输出文件"，第二遍报
+   *   [vost#0:0/libx264] Invalid argument / Generic error in an external library
+   * 而第一遍却能正常跑完（所以只看第一遍会以为没问题）。
+   * 同类坑在本项目里出现过两次（另一次是 `-shortest`），教训是：
+   * **ffmpeg 的参数顺序即语义，输出路径必须永远是最后一个参数。**
+   */
+  const ext = containerDef.extension || path.extname(ctx.outputPath).replace('.', '');
+  const outputPath = ctx.outputPath.endsWith(`.${ext}`) ? ctx.outputPath : `${ctx.outputPath}.${ext}`;
+
+  let passLogPrefix: string | null = null;
+  if (sizeBudget && videoPlan && !videoPlan.args.includes('copy')) {
+    passLogPrefix = path.join(
+      path.dirname(outputPath),
+      `.lumen-2pass-${path.basename(outputPath, `.${ext}`)}`,
+    );
+    args.push('-passlogfile', passLogPrefix);
+  }
+
   /* ---- 进度上报：机器可读的 key=value，走 stdout ---- */
   args.push('-progress', 'pipe:1', '-nostats');
 
-  /* ---- 输出 ---- */
-  const ext = containerDef.extension || path.extname(ctx.outputPath).replace('.', '');
-  const outputPath = ctx.outputPath.endsWith(`.${ext}`) ? ctx.outputPath : `${ctx.outputPath}.${ext}`;
+  /* ---- 输出（永远是最后一个参数） ---- */
   args.push('-f', containerToFormat(container));
   args.push(outputPath);
 
   const estimatedBitrateKbps =
     (videoPlan?.estimatedBitrateKbps ?? 0) + audioPlan.estimatedBitrateKbps;
 
+  /* ---- 两遍编码的第一遍（只分析、写日志、不产出文件） ---- */
+  const prePasses: ExtraPass[] = [];
+  if (sizeBudget && videoPlan && !videoPlan.args.includes('copy') && passLogPrefix) {
+    /*
+     * 第一遍 = 主命令的「输入 + 滤镜 + 编码参数」部分。
+     *
+     * 主命令的尾部顺序是： …编码参数… -map_metadata … -passlogfile X -progress pipe:1 -nostats -f mp4 <输出路径>
+     * 其中 -progress / -nostats 对第一遍没有意义（且 -progress 会污染 stdout 的
+     * 进度解析），所以要从 `-progress` 处截断，而不是只切掉 `-f`。
+     */
+    const progressIdx = args.lastIndexOf('-progress');
+    const encodePart = (progressIdx >= 0 ? args.slice(0, progressIdx) : [...args]).filter(
+      (a) => a !== '-passlogfile' && a !== passLogPrefix,
+    );
+    const passIdx = encodePart.indexOf('-pass');
+    if (passIdx >= 0) encodePart[passIdx + 1] = '1';
+
+    prePasses.push({
+      label: '第一遍：分析画面复杂度',
+      args: [
+        ...encodePart,
+        '-passlogfile',
+        passLogPrefix,
+        '-an',
+        '-f',
+        'null',
+        process.platform === 'win32' ? 'NUL' : '/dev/null',
+      ],
+    });
+
+    notes.push('已启用两遍编码：第一遍分析画面并按复杂度分配码率，第二遍才真正输出，体积能精确命中目标');
+  }
+
   return {
     args,
     commandText: '', // 由调用方补 bin 后填充
+    prePasses,
     notes,
     estimatedBitrateKbps,
+    passLogPrefix,
+    targetSizeMb: sizeBudget ? sizeBudget.targetMb : null,
   };
 }
 

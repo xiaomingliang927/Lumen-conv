@@ -34,8 +34,8 @@ import { planOutputSize, type FitMode } from '../../shared/output-size';
 import { burnSubtitleFilter, subtitleStreamOrdinal } from '../../shared/subtitle-burn';
 import type { ConversionOptions, MediaProbeResult } from '../../shared/types';
 
-/** 预览图最大宽度：够看清构图与字幕，又不至于让 IPC 传几百 KB */
-const PREVIEW_MAX_WIDTH = 480;
+/** 预览图最大宽度：中间栏放大查看时要够清晰（960 宽 ≈ 1080p 源的 0.5 倍） */
+const PREVIEW_MAX_WIDTH = 960;
 const PREVIEW_TIMEOUT_MS = 20_000;
 
 export interface PreviewResult {

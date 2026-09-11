@@ -8,6 +8,7 @@ import { onBeforeUnmount, onMounted, ref } from 'vue';
 import TitleBar from '@/components/TitleBar.vue';
 import Sidebar from '@/components/Sidebar.vue';
 import FileList from '@/components/FileList.vue';
+import PreviewPane from '@/components/PreviewPane.vue';
 import DetailsPanel from '@/components/DetailsPanel.vue';
 import JobQueue from '@/components/JobQueue.vue';
 import SettingsView from '@/components/SettingsView.vue';
@@ -143,7 +144,15 @@ void showToast;
 
         <div class="content">
           <template v-if="activeView === 'convert'">
-            <FileList @pick="pickFiles" />
+            <!--
+              中间栏拆成上下两块：上面是文件列表，下面是画面效果预览。
+              预览放这里而不是塞在右侧 400px 面板里 —— 用户反馈"太小了看不清"，
+              而中间栏在只加载一两个文件时本来就是一大片空白（见 D-025 的补充说明）。
+            -->
+            <div class="center-col">
+              <FileList @pick="pickFiles" />
+              <PreviewPane />
+            </div>
             <DetailsPanel />
           </template>
           <JobQueue v-else-if="activeView === 'queue'" />
@@ -211,6 +220,25 @@ void showToast;
 .content > :first-child {
   flex: 1;
   min-width: 0;
+}
+
+/*
+ * 中间栏：文件列表在上、画面预览在下。
+ *
+ * 文件列表**不参与拉伸**（flex: 0 0 auto）并限制在 46% 高度内：
+ * 只加载一个文件时它只需要一百多像素，剩下的空间全部让给预览 ——
+ * 这正是"预览太小看不清"的解法。
+ */
+.center-col {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.center-col :deep(.file-pane) {
+  flex: 0 0 auto;
+  max-height: 46%;
 }
 
 .toast {

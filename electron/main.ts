@@ -1072,8 +1072,8 @@ async function runSmokeCheck(): Promise<void> {
         const tick = (ms) => new Promise((r) => setTimeout(r, ms));
         const blank = { hasPair: false, leftSrc: '', rightSrc: '', effectsText: '', changedAfterParam: false, error: '' };
         try {
-          const pair = document.querySelector('.preview-pair');
-          if (!pair) return { ...blank, error: '未找到预览区（应出现在「质量与尺寸」里）' };
+          const pair = document.querySelector('.preview-pane .preview-grid');
+          if (!pair) return { ...blank, error: '未找到预览区（应出现在中间栏下方）' };
           const imgs = [...pair.querySelectorAll('img')];
           const leftSrc = imgs[0]?.getAttribute('src') ?? '';
           let rightSrc = imgs[1]?.getAttribute('src') ?? '';
@@ -1084,7 +1084,7 @@ async function runSmokeCheck(): Promise<void> {
             const now = [...pair.querySelectorAll('img')][1];
             rightSrc = now?.getAttribute('src') ?? '';
           }
-          const effectsText = (document.querySelector('.preview-head')?.textContent ?? '').replace(/\\s+/g, ' ').trim().slice(0, 70);
+          const effectsText = (document.querySelector('.preview-pane .preview-head')?.textContent ?? '').replace(/\\s+/g, ' ').trim().slice(0, 70);
 
           // 改画面比例 → 预览图 URL 应当变化（说明它真的重渲染，而不是渲一次就完事）
           const fitSel = [...document.querySelectorAll('.quality-block select')].find((s) =>
@@ -1098,7 +1098,7 @@ async function runSmokeCheck(): Promise<void> {
               fitSel.dispatchEvent(new Event('change', { bubbles: true }));
               for (let i = 0; i < 20; i++) {
                 await tick(400);
-                const now = [...document.querySelectorAll('.preview-pair img')][1]?.getAttribute('src') ?? '';
+                const now = document.querySelector('.preview-pane .preview-grid img:last-of-type')?.getAttribute('src') ?? '';
                 if (now && now !== rightSrc) {
                   changedAfterParam = true;
                   break;
@@ -1120,7 +1120,7 @@ async function runSmokeCheck(): Promise<void> {
     );
     extraChecks.push(
       [
-        '单帧预览：原图与「当前参数的效果图」并排显示（效果图由 ffmpeg 真实生成）',
+        '单帧预览：原图与「当前参数的效果图」并排显示在中间栏（效果图由 ffmpeg 真实生成）',
         previewUi.hasPair && previewUi.leftSrc.length > 0 && previewUi.rightSrc.includes('lumen-media'),
         previewUi.error
           ? `执行出错：${previewUi.error}`

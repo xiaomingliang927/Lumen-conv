@@ -69,7 +69,7 @@ npm run smoke:ui:full
 转换偏好、主题与缓存清理。这一页信息量最大，能直接反映运行环境是否正常。*
 
 > 说明：`docs/screenshots/` 下的 5 张 PNG 由上面那两步命令**自动生成并覆盖**（第 1 步出前 4 张，第 2 步出 `queue-done.png`），
-> `smoke:ui:full` 一级同时执行 **31 项**界面断言（断言内容见 [docs/TEST_CASES.md](docs/TEST_CASES.md) 的 A7 / A8 / B0 节，
+> `smoke:ui:full` 一级同时执行 **35 项**界面断言（断言内容见 [docs/TEST_CASES.md](docs/TEST_CASES.md) 的 A7 / A8 / B0 节，
 > 截图清单见 [docs/screenshots/README.md](docs/screenshots/README.md)）。
 > 在你本地首次跑出截图之前，上面的图片引用会是空链接。
 
@@ -379,12 +379,12 @@ npm start              # 构建后直接以生产模式启动（electron .）
 npm run smoke              # 端到端冒烟：合成素材 → ffprobe 探测 → 缩略图抽帧 → 命令装配 → 真跑 ffmpeg → 校验产物
 npm run smoke -- --quick   # 只跑核心用例（跳过 H.265 / 旋转样本的合成）
 npm run smoke:ui           # 构建后以 --smoke 启动 Electron，做界面自检并截图（14 项检查）
-npm run smoke:ui:file      # 上一项 + 加载真实视频后再截图（21 项检查）
-npm run smoke:ui:full      # 再额外在应用内真的点一次「开始转换」并等任务跑完（31 项检查）
+npm run smoke:ui:file      # 上一项 + 加载真实视频后再截图（25 项检查）
+npm run smoke:ui:full      # 再额外在应用内真的点一次「开始转换」并等任务跑完（35 项检查）
 ```
 
 **当前实测结果**：`npm run smoke` **48/48 通过**（0 失败，总耗时 18.4s），
-`npm run smoke:ui:full` **31/31 通过、退出码 0**（三级命令的检查项是递进追加的：14 → 21 → 31），
+`npm run smoke:ui:full` **35/35 通过、退出码 0**（三级命令的检查项是递进追加的：14 → 25 → 35），
 `npm run typecheck` 主进程 `tsc` 与渲染层 `vue-tsc` 均退出码 0、零错误。
 不需要任何外部素材——测试视频用 `lavfi` 的 `testsrc2` + 正弦音现场合成，
 所以任何机器上 clone 下来（跑完 `npm run setup`）都能复现。
@@ -441,7 +441,7 @@ npm run dist:portable   # = node scripts/package-portable.mjs --build
 
 `release/` 已在 `.gitignore` 中排除（`git check-ignore -v release/` 会命中 `.gitignore` 第 4 行），所以产物不入库。
 
-便携版**实跑了全套界面自检并 31/31 通过、退出码 0**：
+便携版**实跑了全套界面自检并 35/35 通过、退出码 0**：
 
 ```bash
 release/Lumen-conv-便携版/Lumen-conv.exe --smoke --smoke-file=<绝对路径> --smoke-convert

@@ -92,24 +92,34 @@ function toggleSub(index: number): void {
   p({ subtitleStreamIndexes: [...cur] });
 }
 
-/** 选择预设时同步把容器相关的编码器/音轨选项重置为该预设默认 */
+/**
+ * 选择输出预设。
+ *
+ * 这里**必须写全局 options，不能走 setActiveOverride（按文件覆盖）**。
+ * 这是一个真实 bug 的修复：早期实现写进了当前文件的 overrides，但界面上的
+ * 选中态是拿全局 `options.presetId` 判定的，两者不一致，导致：
+ *   1) 点任何预设卡片，高亮都停在「MP4 通用兼容」不动 —— 看起来"点了没反应"
+ *   2) 但转换时用的确实是点过的那个预设（实际生效了，只是界面不反映）
+ *   3) 切换到另一个文件后，之前的选择丢失
+ * 预设表达的是"我要转成什么格式"，属于全局偏好，不该随文件切换而重置。
+ */
 function choosePreset(id: string): void {
   const preset = CONVERSION_PRESETS.find((x) => x.id === id);
   if (!preset) return;
-  const patch: Parameters<typeof setActiveOverride>[0] = {
+  options.value = {
+    ...options.value,
     presetId: preset.id,
     videoCodecId: preset.videoCodecId ?? 'none',
     audioCodecId: preset.audioCodecId,
     qualityId: preset.qualityId,
     resolutionId: preset.resolutionId,
+    // 直通预设下音轨也必须直通，否则会出现「视频直通 + 音频重编码」的隐性行为
+    ...(preset.videoCodecId === 'copy' && CONTAINERS[preset.container].audioCodecs.includes('copy')
+      ? { audioCodecId: 'copy' }
+      : {}),
     subtitleStreamIndexes: preset.container === 'mkv' ? options.value.subtitleStreamIndexes : [],
     audioStreamIndexes: [],
   };
-  // 直通预设下音轨也必须直通，否则会出现「视频直通 + 音频重编码」的隐性行为
-  if (preset.videoCodecId === 'copy' && CONTAINERS[preset.container].audioCodecs.includes('copy')) {
-    patch.audioCodecId = 'copy';
-  }
-  p(patch);
 }
 
 const estimatedText = computed(() => {
@@ -293,11 +303,32 @@ void VIDEO_CODECS;
               :key="preset.id"
               class="preset-card"
               :class="{ active: activePreset.id === preset.id }"
+              :aria-pressed="activePreset.id === preset.id"
+              :title="`选择「${preset.label}」`"
               @click="choosePreset(preset.id)"
             >
               <div class="preset-top">
                 <span class="preset-label">{{ preset.label }}</span>
-                <span class="chip">{{ CONTAINERS[preset.container].label }}</span>
+                <!-- 右侧是「输出容器」标签，不是按钮：整张卡片才是可点区域。
+                     加 title 说明它的含义，避免被误认为是下拉入口。 -->
+                <span
+                  class="chip chip-container"
+                  :title="`输出容器：${CONTAINERS[preset.container].label}（${CONTAINERS[preset.container].description}）`"
+                >
+                  {{ CONTAINERS[preset.container].label }}
+                </span>
+                <span v-if="activePreset.id === preset.id" class="preset-check" aria-hidden="true">
+                  <svg viewBox="0 0 14 14" width="11" height="11">
+                    <path
+                      d="M2.5 7.5 5.5 10.5 11.5 3.5"
+                      fill="none"
+                      stroke="currentColor"
+                      stroke-width="2"
+                      stroke-linecap="round"
+                      stroke-linejoin="round"
+                    />
+                  </svg>
+                </span>
               </div>
               <p class="preset-desc">{{ preset.description }}</p>
             </button>
@@ -511,6 +542,15 @@ void VIDEO_CODECS;
           <span v-if="quality" class="muted">· {{ quality.label }}</span>
         </template>
       </div>
+      <!-- 让"这个文件参数为什么和别的文件不一样"这件事有处可查、可一键还原 -->
+      <button
+        v-if="hasOverride"
+        class="btn btn-sm btn-ghost override-badge"
+        title="本文件有单独设置（质量 / 分辨率 / 帧率 / 编码器等），点击恢复为全局设置"
+        @click="resetToGlobal"
+      >
+        <span class="override-dot" />本文件已单独设置 · 恢复
+      </button>
       <button class="btn btn-primary" @click="convertThis">
         <svg viewBox="0 0 16 16" width="13" height="13">
           <path d="M5 3.5 12 8l-7 4.5v-9Z" fill="currentColor" />
@@ -614,25 +654,52 @@ void VIDEO_CODECS;
   border-radius: var(--radius);
   border: 1px solid var(--border-subtle);
   background: var(--bg-elevated);
-  transition: border-color 0.12s, background 0.12s;
+  transition: border-color 0.12s, background 0.12s, transform 0.06s;
+  cursor: pointer;
+  /* 左侧留一条透明竖线，选中时点亮 —— 比只靠边框颜色更容易一眼扫到 */
+  border-left-width: 3px;
+  border-left-color: transparent;
 }
 .preset-card:hover {
   border-color: var(--border-strong);
   background: var(--bg-hover);
 }
+.preset-card:active {
+  transform: translateY(1px);
+}
+.preset-card:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
 .preset-card.active {
   border-color: var(--accent);
+  border-left-color: var(--accent);
   background: var(--accent-dim);
 }
 .preset-top {
   display: flex;
   align-items: center;
-  justify-content: space-between;
   gap: 8px;
 }
 .preset-label {
   font-weight: 600;
   font-size: 12.5px;
+}
+/* 容器标签推到右边，选中标记再跟在它后面 */
+.preset-card .chip-container {
+  margin-left: auto;
+  cursor: help;
+}
+.preset-check {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  flex: none;
+  border-radius: 50%;
+  background: var(--accent);
+  color: #1a1206;
 }
 .preset-desc {
   margin: 3px 0 0;
@@ -768,5 +835,19 @@ code {
 }
 .foot-estimate strong {
   color: var(--accent);
+}
+
+.override-badge {
+  margin-left: auto;
+  margin-right: 8px;
+  gap: 5px;
+  color: var(--accent);
+}
+.override-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+  flex: none;
 }
 </style>

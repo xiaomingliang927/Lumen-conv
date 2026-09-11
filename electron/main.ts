@@ -46,10 +46,33 @@ const DEV_SERVER_URL = process.env.LUMEN_DEV_SERVER ?? 'http://localhost:5273';
 
 /* ------------------------------ 单实例 ------------------------------ */
 
-// 第二次启动时聚焦已有窗口，而不是再开一个（转换任务不该被分成两份）
+/**
+ * 是否处于自动化界面自检模式（`--smoke`）。
+ * 必须在单实例判定之前就确定 —— 见下面拿到锁失败时的分支。
+ */
+const isSmokeMode = process.argv.includes('--smoke');
+
+/*
+ * 第二次启动时聚焦已有窗口，而不是再开一个（转换任务不该被分成两份）。
+ *
+ * 踩坑（隐蔽且浪费了很多时间）：在 `--smoke` 模式下如果没拿到锁，
+ * 原来只是 `app.quit()` 就结束，**进程退出码是 0、且一行输出都没有**，
+ * 于是自检脚本看起来"跑过了、还成功了"，实际什么都没验证
+ * （实测被昨天遗留的 4 个应用进程卡住，连续几轮自检全部静默假成功）。
+ * 因此这里对自检模式显式报错并以非零码退出，让"没真跑"这件事无法被忽略。
+ */
 const gotLock = app.requestSingleInstanceLock();
 if (!gotLock) {
-  app.quit();
+  if (isSmokeMode) {
+    console.error(
+      '[smoke] ✘ 未能获取单实例锁：已有 Lumen-conv / Electron 实例在运行，本次自检不会执行。\n' +
+        '        请先关闭已运行的实例（任务管理器结束 Lumen-conv.exe / electron.exe），或执行：\n' +
+        '        Stop-Process -Name "Lumen-conv","electron" -Force',
+    );
+    app.exit(2);
+  } else {
+    app.quit();
+  }
 } else {
   app.on('second-instance', () => {
     if (mainWindow) {
@@ -365,6 +388,177 @@ async function runSmokeCheck(): Promise<void> {
       ],
       ['加载真实文件后：截图已生成', existsSync(path.join(outDir, 'main-with-file.png')), 'main-with-file.png'],
     );
+
+    /*
+     * 预设卡片「真的能点」的交互验证。
+     *
+     * 起因：有用户看到卡片右侧的容器标签（MP4 / WebM）以为是可点的下拉入口，
+     * 说明"整张卡才是按钮"这件事在界面上没有传达清楚。
+     * 这类问题靠肉眼看截图发现不了，所以这里直接模拟点击并断言选中态与联动变化。
+     *
+     * 包 try/catch：这一段是纯增强检查，任何异常都应记为"一项失败"，
+     * 而不是把整轮自检打断（早期版本没包，异常直接让后续断言全部消失）。
+     */
+    let presetInteraction = {
+      beforeLabel: '',
+      afterLabel: '',
+      checkedMoved: false,
+      estimateChanged: false,
+      clickOk: false,
+      error: '',
+      diag: '',
+    };
+    try {
+      // 关键：Vue 的更新是异步的，`el.click()` 之后立刻读 DOM 会读到**旧状态**。
+      // 早期版本就是同步读，导致断言看起来像"点击无效"，实际是读取时机不对。
+      // 这里拆成"读初始状态 → 点击 → 等一拍 → 读结果"三步。
+      const before = await evalJs<{ label: string; estimate: string; index: number; targetIndex: number }>(
+        '记录切换前的预设状态',
+        `(() => {
+          const cards = [...document.querySelectorAll('.preset-card')];
+          const active = document.querySelector('.preset-card.active');
+          const target = cards.find((c) => !c.classList.contains('active'));
+          return {
+            label: (active?.querySelector('.preset-label')?.textContent ?? '').trim(),
+            estimate: (document.querySelector('.details-foot .foot-estimate')?.textContent ?? '').trim(),
+            index: cards.indexOf(active),
+            targetIndex: target ? cards.indexOf(target) : -1,
+          };
+        })()`,
+      );
+
+      if (before.targetIndex < 0) {
+        presetInteraction = { ...presetInteraction, error: '没有可切换的预设卡片' };
+      } else {
+        const clicked = await evalJs<boolean>(
+          '点击另一张预设卡片',
+          `(() => {
+            const cards = [...document.querySelectorAll('.preset-card')];
+            // 用真实 MouseEvent 而不是 el.click()：走完整的捕获/冒泡链路，与用户真实点击一致
+            cards[${before.targetIndex}].dispatchEvent(
+              new MouseEvent('click', { bubbles: true, cancelable: true, view: window }),
+            );
+            return true;
+          })()`,
+        );
+        await shotDelay(250); // 等 Vue 把更新刷到 DOM
+
+        const after = await evalJs<{
+          label: string;
+          estimate: string;
+          index: number;
+          checkMarks: number;
+          checkOnTarget: boolean;
+        }>(
+          '读取切换后的预设状态',
+          `(() => {
+            const cards = [...document.querySelectorAll('.preset-card')];
+            const active = document.querySelector('.preset-card.active');
+            return {
+              label: (active?.querySelector('.preset-label')?.textContent ?? '').trim(),
+              estimate: (document.querySelector('.details-foot .foot-estimate')?.textContent ?? '').trim(),
+              index: cards.indexOf(active),
+              checkMarks: document.querySelectorAll('.preset-check').length,
+              checkOnTarget: Boolean(cards[${before.targetIndex}]?.querySelector('.preset-check')),
+            };
+          })()`,
+        );
+
+        presetInteraction = {
+          beforeLabel: before.label,
+          afterLabel: after.label,
+          checkedMoved: after.index === before.targetIndex && after.checkOnTarget,
+          estimateChanged: after.estimate !== before.estimate,
+          clickOk: clicked,
+          error: '',
+          diag: `选中索引 ${before.index} → ${after.index}，勾选标记 ${after.checkMarks} 个`,
+        };
+      }
+    } catch (err) {
+      presetInteraction = {
+        ...presetInteraction,
+        error: err instanceof Error ? err.message : String(err),
+      };
+    }
+
+    extraChecks.push(
+      [
+        '预设卡片：点击后选中态切换',
+        presetInteraction.clickOk &&
+          presetInteraction.afterLabel !== presetInteraction.beforeLabel &&
+          presetInteraction.afterLabel.length > 0,
+        presetInteraction.error
+          ? `执行出错：${presetInteraction.error}`
+          : `${presetInteraction.beforeLabel} → ${presetInteraction.afterLabel}${presetInteraction.diag ? ` | ${presetInteraction.diag}` : ''}`,
+      ],
+      [
+        '预设卡片：选中项显示勾选标记',
+        presetInteraction.checkedMoved,
+        presetInteraction.checkedMoved ? '勾选标记跟随选中卡片' : '未找到 .preset-check 或未跟随',
+      ],
+      [
+        '预设卡片：切换预设后体积预估联动更新',
+        presetInteraction.estimateChanged,
+        presetInteraction.estimateChanged ? '预估已随预设变化' : '预估未变化（可能两个预设码率档位相同）',
+      ],
+    );
+    // 点完切回默认预设，避免影响后续截图与转换用例的预期
+    await evalJs<boolean>(
+      '恢复默认预设',
+      `(() => {
+        const first = document.querySelector('.preset-card');
+        if (first && !first.classList.contains('active')) first.click();
+        return true;
+      })()`,
+    );
+    await shotDelay(200);
+
+    /*
+     * 回归：预设选择必须跨文件保留。
+     *
+     * 原 bug 的第三个表现就是"切到另一个文件后之前的选择丢了"（因为写进了按文件的 overrides）。
+     * 这里再加载一个文件并切换选中项，确认高亮仍停在刚选的预设上。
+     */
+    const secondSample = path.join(app.getAppPath(), 'test-assets', 'samples', 'sample-hevc.mkv');
+    if (existsSync(secondSample)) {
+      await evalJs<boolean>(
+        '加载第二个文件',
+        `(() => { window.__lumenAddFiles(${JSON.stringify([secondSample])}); return true; })()`,
+      );
+      await shotDelay(1500);
+      await evalJs<boolean>(
+        '切回第一个文件',
+        `(() => {
+          const cards = [...document.querySelectorAll('.file-card')];
+          if (cards[0]) cards[0].click();
+          return true;
+        })()`,
+      );
+      await shotDelay(400);
+      const keptPreset = await evalJs<{ label: string; files: number }>(
+        '检查跨文件后的预设',
+        `(() => ({
+          label: (document.querySelector('.preset-card.active .preset-label')?.textContent ?? '').trim(),
+          files: document.querySelectorAll('.file-card').length,
+        }))()`,
+      );
+      extraChecks.push([
+        '预设选择跨文件保留',
+        keptPreset.label === 'MP4 通用兼容' && keptPreset.files >= 2,
+        `${keptPreset.files} 个文件，当前预设「${keptPreset.label}」`,
+      ]);
+      // 移除第二个文件，保持后续队列/转换用例只有 1 个文件
+      await evalJs<boolean>(
+        '移除第二个文件',
+        `(() => {
+          const cards = [...document.querySelectorAll('.file-card')];
+          const last = cards[cards.length - 1];
+          if (last) last.querySelector('.file-remove')?.click();
+          return true;
+        })()`,
+      );
+      await shotDelay(300);
+    }
 
     /* ---- 在应用内真跑一次完整转换：这是端到端最强证据 ---- */
     if (process.argv.includes('--smoke-convert')) {
@@ -805,8 +999,8 @@ function wireEngineEvents(): void {
   });
 }
 
-/** 是否处于自动化界面自检模式（npm run smoke:ui） */
-const isSmokeMode = process.argv.includes('--smoke');
+// isSmokeMode 已在文件顶部（单实例判定之前）声明 —— 那里需要它来决定拿不到锁时
+// 是"静默退出"还是"报错并非零退出"。
 
 app.whenReady().then(async () => {
   registerMediaProtocol();

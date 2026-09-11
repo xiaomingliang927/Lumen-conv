@@ -375,6 +375,67 @@ async function main() {
     return '已跳过缩放';
   });
 
+  /*
+   * 竖屏适配（画面比例 = 竖屏 9:16）。
+   *
+   * 起因：用户反馈"我换成手机的但是屏幕比例没变" —— 1080p 是上限，源更低时不会放大，
+   * 于是"手机"这个用途对 640×360 的源什么也没改变。竖屏适配是显式可选项，默认关。
+   * 这两条盯的是"画布按 9:16、且不放大"这条规则。
+   */
+  check('画面比例：竖屏补边 → 画布 9:16，且画布短边不超过源（不放大）', () => {
+    const r = mods.commands.buildCommand({ ...baseOptions, resolutionId: '1080p', fitMode: 'pad' }, {
+      probe: probeResult,
+      outputPath: path.join(OUTPUT, 'fit-pad.mp4'),
+    });
+    const text = r.args.join(' ');
+    // 源 640×360，短边 360 → 画布 360×640
+    assert(/scale=360:640:force_original_aspect_ratio=decrease/.test(text), `缩放参数不对：${text.slice(0, 260)}`);
+    assert(/pad=360:640:\(ow-iw\)\/2:\(oh-ih\)\/2:black/.test(text), `补边参数不对：${text.slice(0, 260)}`);
+    /*
+     * setsar 必须重置。
+     * force_original_aspect_ratio 会算出小数尺寸（640×360 放进 360×640 是 360×202.5），
+     * ffmpeg 取整后改 SAR 补偿，于是回读的 displayWidth 变成 361 —— 真实素材测试里踩到过。
+     */
+    assert(/setsar=1/.test(text), '竖屏补边必须重置 SAR，否则回读尺寸会因非方形像素而偏移');
+    assert(!/scale=-2:/.test(text), '竖屏模式下不应再套用普通的按高度缩放');
+    return 'scale=360:640:…decrease + pad=360:640 + setsar=1';
+  });
+
+  check('画面比例：竖屏裁剪 → 画布 9:16，用 increase 填满后裁切', () => {
+    const r = mods.commands.buildCommand({ ...baseOptions, resolutionId: '1080p', fitMode: 'crop' }, {
+      probe: probeResult,
+      outputPath: path.join(OUTPUT, 'fit-crop.mp4'),
+    });
+    const text = r.args.join(' ');
+    assert(/scale=360:640:force_original_aspect_ratio=increase/.test(text), `缩放参数不对：${text.slice(0, 260)}`);
+    assert(/crop=360:640/.test(text), `裁剪参数不对：${text.slice(0, 260)}`);
+    return 'scale=360:640:…increase + crop=360:640';
+  });
+
+  check('画面比例：源短边高于上限时，画布取上限（1920×1080 源 + 720p → 720×1280）', () => {
+    const bigProbe = {
+      ...probeResult,
+      video: [{ ...probeResult.video[0], width: 1920, height: 1080, displayWidth: 1920, displayHeight: 1080 }],
+    };
+    const r = mods.commands.buildCommand({ ...baseOptions, resolutionId: '720p', fitMode: 'pad' }, {
+      probe: bigProbe,
+      outputPath: path.join(OUTPUT, 'fit-720.mp4'),
+    });
+    const text = r.args.join(' ');
+    assert(/pad=720:1280/.test(text), `画布应为 720×1280：${text.slice(0, 260)}`);
+    return 'pad=720:1280';
+  });
+
+  check('画面比例：默认 off 不产生任何 pad / crop 滤镜', () => {
+    const r = mods.commands.buildCommand({ ...baseOptions, resolutionId: '1080p', fitMode: 'off' }, {
+      probe: probeResult,
+      outputPath: path.join(OUTPUT, 'fit-off.mp4'),
+    });
+    const text = r.args.join(' ');
+    assert(!/pad=/.test(text) && !/crop=/.test(text), '默认不应改画面比例');
+    return '无 pad / crop';
+  });
+
   check('H.265 预设带 hvc1 标签', () => {
     const r = mods.commands.buildCommand(
       { ...baseOptions, videoCodecId: 'hevc' },
@@ -788,6 +849,41 @@ async function main() {
       }
     };
     await prefixCleanup();
+
+    /*
+     * 清掉两遍编码遗留的统计日志。
+     *
+     * 这些 `.lumen-2pass-<输出名>-0.log(.mbtree)` 是 ffmpeg 两遍编码的中间文件，
+     * 正常流程由 `ConversionEngine.cleanupPassLog()` 在任务结束时删掉。
+     * 但如果某一轮自检被**中途杀掉**（Ctrl-C、关窗口、Stop-Process），
+     * 文件就会留在产物目录里，名字还带着当时那次运行的文件名序号
+     * （例如 `.lumen-2pass-size-target (12)-0.log`）。
+     *
+     * 后面那条"统计日志必须被清理干净"的断言扫的是整个目录，于是会被**上一次**
+     * 留下的垃圾判为失败 —— 断言本身没错，但它报的是历史问题而不是本次问题
+     * （本轮实测被这个坑了一次：产物目录里有被我 kill 掉的那轮留下的日志）。
+     * 这里先清一遍，并把清掉的数量打出来：既让本次结果确定，也不掩盖"上次没清干净"。
+     */
+    let stalePassLogs = 0;
+    for (const dir of [OUTPUT, SAMPLES]) {
+      let names = [];
+      try {
+        names = await fsp.readdir(dir);
+      } catch {
+        continue;
+      }
+      for (const name of names) {
+        if (name.startsWith('.lumen-2pass-')) {
+          await fsp.rm(path.join(dir, name), { force: true });
+          stalePassLogs++;
+        }
+      }
+    }
+    if (stalePassLogs > 0) {
+      console.log(
+        `[smoke] 清理了 ${stalePassLogs} 个上次运行遗留的两遍编码日志（通常是自检被中途杀掉留下的）`,
+      );
+    }
 
     const engine = new mods.engine.ConversionEngine();
     engine.setFfmpegPath(FFMPEG);

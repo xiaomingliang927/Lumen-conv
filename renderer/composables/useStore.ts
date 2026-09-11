@@ -77,8 +77,11 @@ export const options = ref<ConversionOptions>({
   resolutionId: '1080p',
   fpsId: 'source',
   sizeLimitMb: 100,
-  deviceId: 'any',
+  // 默认设备跟着默认用途「发微信 / QQ」走（见 shared/use-cases.ts 的 2026-09 修订）
+  deviceId: 'android-phone',
   useCaseId: 'wechat',
+  // 画面比例默认**保持原样**：补黑边/裁剪都是用户看得见的画面损失，必须是显式选择
+  fitMode: 'off',
   outputDir: null,
   fileNameTemplate: '{name}',
   overwrite: false,

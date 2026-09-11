@@ -12,7 +12,23 @@
  *   设备（Device）    → 决定「能不能播」：给兼容性预检提供判据，并可一键纠偏
  *
  * 两者独立：同一份"发微信"的产物，发给不同的电视可能依然放不了。
- */
+ *
+ * ------------------------------------------------------------------ *
+ * 2026-09 修订：用途现在**带出设备**（真实用户反馈驱动的改动）
+ *
+ * 用户反馈："你要拿去干什么 和 在哪播放/多大体积 存在耦合情况"。
+ * 查下来比"耦合"更糟，是**语义重叠但没接上**：
+ *   · 用途卡片里有「老电视 / 车载 U 盘」，设备下拉里又有「老安卓电视 / 车机」——
+ *     两个地方都在问"给什么设备用"；
+ *   · 但选「老电视 / 车载 U 盘」时**并不会**把设备设成老安卓电视，
+ *     `applyUseCase` 根本不碰 deviceId，于是兼容性预检按"不限定"跑，
+ *     等于这个用途最该做的检查反而没做。
+ *
+ * 现在的分工（一个参数只有一个主人）：
+ *   · 用途 → 决定「转成什么样」**并**带出一个推荐的播放设备（可手动覆盖）；
+ *   · 设备 → 只用于兼容性预检；界面明确标注"由用途自动设定，可改"；
+ *   · 体积上限 → 由用途设定，控件也跟着留在用途区块里（不再住进"在哪播"）。
+ * ------------------------------------------------------------------ */
 
 import type { ConversionOptions } from './types';
 
@@ -44,6 +60,14 @@ export interface UseCase {
    * 例如"发微信"必须 H.264 —— 因为微信在部分机型上确实放不了 HEVC。
    */
   requiresCodec: string | null;
+  /**
+   * 该用途隐含的播放设备（用于兼容性预检），null = 不限定。
+   *
+   * 为什么用途要带设备：见文件头部的 2026-09 修订说明。
+   * 用户选了「老电视 / 车载 U 盘」，预检就必须按老安卓电视的判据跑，
+   * 否则这个用途最该做的检查是空的。
+   */
+  deviceId: string | null;
 }
 
 export const USE_CASES: UseCase[] = [
@@ -59,6 +83,7 @@ export const USE_CASES: UseCase[] = [
     qualityId: 'balanced',
     tip: '微信在部分机型上放不了 H.265，所以这里固定用兼容性最好的 H.264',
     requiresCodec: 'h264',
+    deviceId: 'android-phone',
   },
   {
     id: 'phone',
@@ -68,8 +93,15 @@ export const USE_CASES: UseCase[] = [
     sizeLimitMb: null,
     resolutionId: '1080p',
     qualityId: 'small',
-    tip: '按手机屏幕尺寸，1080p 已经看不出和原片的差别',
+    /*
+     * 这句提示原来写的是"按手机屏幕尺寸，1080p 已经看不出和原片的差别"，
+     * 属于**过度承诺**：1080p 是**上限**，源本身低于 1080p 时不会放大，
+     * 输出尺寸一点都不会变（用户实测反馈"我换成手机的但是屏幕比例没变"）。
+     * 现在只承诺它真正会做的事。
+     */
+    tip: '1080p 是「上限」：源高于 1080p 才会压下来，源更低时保持原样（不放大）。想让竖屏手机满屏看，把「画面比例」改成竖屏 9:16',
     requiresCodec: null,
+    deviceId: 'android-phone',
   },
   {
     id: 'edit',
@@ -81,6 +113,7 @@ export const USE_CASES: UseCase[] = [
     qualityId: 'high',
     tip: '剪辑软件通常不吃 H.265 与 MKV，这里统一转成 H.264 的 MP4',
     requiresCodec: 'h264',
+    deviceId: 'editor',
   },
   {
     id: 'tv',
@@ -92,6 +125,7 @@ export const USE_CASES: UseCase[] = [
     qualityId: 'balanced',
     tip: '老设备解码能力弱：固定 H.264 + AAC，并避免 HDR 与高帧率',
     requiresCodec: 'h264',
+    deviceId: 'android-old',
   },
   {
     id: 'archive',
@@ -103,6 +137,7 @@ export const USE_CASES: UseCase[] = [
     qualityId: 'high',
     tip: 'H.265 比 H.264 省约 40% 体积，但老设备可能播不了',
     requiresCodec: null,
+    deviceId: 'any',
   },
   {
     id: 'audio',
@@ -114,6 +149,7 @@ export const USE_CASES: UseCase[] = [
     qualityId: 'high',
     tip: null,
     requiresCodec: null,
+    deviceId: 'any',
   },
   {
     id: 'gif',
@@ -125,6 +161,7 @@ export const USE_CASES: UseCase[] = [
     qualityId: 'balanced',
     tip: 'GIF 不适合长片段：建议先裁剪到 3-6 秒',
     requiresCodec: null,
+    deviceId: 'any',
   },
   {
     id: 'remux',
@@ -136,6 +173,7 @@ export const USE_CASES: UseCase[] = [
     qualityId: 'high',
     tip: '源编码装不进目标容器时会失败，届时请改用其它用途',
     requiresCodec: null,
+    deviceId: 'any',
   },
 ];
 
@@ -162,6 +200,13 @@ export function applyUseCase(
     qualityId: uc.qualityId,
     resolutionId: uc.resolutionId,
     sizeLimitMb: uc.sizeLimitMb,
+    /*
+     * 设备**跟着用途走**：这是 2026-09 修订的核心。
+     * 以前这里不设 deviceId，于是"老电视 / 车载 U 盘"这个用途
+     * 反而不会触发老电视的兼容性检查（预检按"不限定"跑）。
+     * 用户仍可在界面上手动改设备 —— 那时它是"覆盖"，不再由用途决定。
+     */
+    deviceId: uc.deviceId,
     subtitleStreamIndexes: [],
     audioStreamIndexes: [],
   };

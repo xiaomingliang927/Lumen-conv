@@ -73,6 +73,7 @@ const baseOptions = {
   sizeLimitMb: null,
   deviceId: null,
   useCaseId: null,
+  fitMode: 'off',
   outputDir: OUTPUT,
   fileNameTemplate: 'out-{name}',
   overwrite: false,
@@ -93,6 +94,8 @@ const files = [
   'uhd-4k.mp4',
   'sample-hevc.mkv',
   'sample-audio.mp3',
+  // 640×360 的小样本：用来验证"源低于上限时不放大"在**竖屏画布**上同样成立
+  'sample-h264.mp4',
   'broken.mp4',
   'empty.mp4',
 ];
@@ -293,6 +296,35 @@ if (doConvert) {
       outFile: 'uhd-to-1080p.mp4',
       expect: '4K 缩到 1080p',
       verify: (p) => p.video[0].displayHeight === 1080,
+    },
+    /*
+     * 竖屏适配（画面比例 = 竖屏 9:16）—— 用**真实产物尺寸**验证，而不是只看滤镜字符串。
+     *
+     * 起因：用户反馈"我换成手机的但是屏幕比例没变"。
+     * 1080p 这类分辨率是"上限"，源更低时不会放大，所以光选用途改变不了画面比例。
+     * 竖屏适配是显式选项，这里确认它真的产出了 9:16 的竖屏视频。
+     */
+    {
+      file: 'uhd-4k.mp4',
+      options: { ...baseOptions, audioCodecId: 'none', resolutionId: '720p', fitMode: 'pad' },
+      outFile: 'uhd-portrait-pad.mp4',
+      expect: '4K + 720p + 竖屏补边 → 720×1280',
+      verify: (p) => p.video[0].displayWidth === 720 && p.video[0].displayHeight === 1280,
+    },
+    {
+      file: 'uhd-4k.mp4',
+      options: { ...baseOptions, audioCodecId: 'none', resolutionId: '720p', fitMode: 'crop' },
+      outFile: 'uhd-portrait-crop.mp4',
+      expect: '4K + 720p + 竖屏裁剪 → 720×1280',
+      verify: (p) => p.video[0].displayWidth === 720 && p.video[0].displayHeight === 1280,
+    },
+    {
+      file: 'sample-h264.mp4',
+      // 640×360 的源：画布短边取源短边 360（不放大），而不是拉到 1080
+      options: { ...baseOptions, audioCodecId: 'none', resolutionId: '1080p', fitMode: 'pad' },
+      outFile: 'small-portrait-pad.mp4',
+      expect: '360p 源 + 1080p 上限 + 竖屏 → 360×640（不放大）',
+      verify: (p) => p.video[0].displayWidth === 360 && p.video[0].displayHeight === 640,
     },
     {
       file: 'sample-hevc.mkv',

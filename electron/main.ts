@@ -608,6 +608,210 @@ async function runSmokeCheck(): Promise<void> {
     await shotDelay(300);
 
     /*
+     * 用途 ↔ 设备 / 体积的归属（用户反馈："你要拿去干什么 和 在哪播放/多大体积 存在耦合情况"）。
+     *
+     * 原来：体积上限这个控件住在「在哪播 / 多大体积」里，值却由用途决定（两个主人）；
+     *      用途里有「老电视 / 车载 U 盘」，设备下拉里又有「老安卓电视 / 车机」，
+     *      但选前者**不会**改后者，兼容性预检按"不限定"跑，等于没检查。
+     * 现在：体积上限控件回到用途区；用途带出设备，并标注"由用途自动设定，可改"。
+     */
+    const coupling = await evalJs<{
+      sizeInUseCaseBlock: boolean;
+      sizeInDeviceBlock: boolean;
+      deviceAfterTvUseCase: string;
+      hintAfterUseCase: string;
+      hintAfterManual: string;
+      restoreBtnShown: boolean;
+      error: string;
+    }>(
+      '验证用途与设备/体积的归属',
+      `(async () => {
+        const tick = () => new Promise((r) => setTimeout(r, 260));
+        const devSel = () => document.querySelector('.device-block select');
+        const hintText = () =>
+          (document.querySelector('.device-block .field-hint')?.textContent ?? '').replace(/\\s+/g, ' ').trim();
+        const blank = {
+          sizeInUseCaseBlock: false, sizeInDeviceBlock: false, deviceAfterTvUseCase: '',
+          hintAfterUseCase: '', hintAfterManual: '', restoreBtnShown: false, error: '',
+        };
+        try {
+          // 选「老电视 / 车载 U 盘」
+          const cards = [...document.querySelectorAll('.usecase-card')];
+          const tv = cards.find((c) => (c.querySelector('.usecase-label')?.textContent ?? '').includes('老电视'));
+          if (!tv) return { ...blank, error: '未找到「老电视 / 车载 U 盘」卡片' };
+          tv.click();
+          await tick();
+          await tick();
+
+          const dev = devSel();
+          const deviceAfterTvUseCase = dev ? dev.value : '';
+          const hintAfterUseCase = hintText();
+
+          // 再手动把设备改成别的：提示应改口，并出现"用回用途推荐"
+          if (dev) {
+            const other = [...dev.options].find((o) => o.value !== dev.value);
+            if (other) {
+              dev.value = other.value;
+              dev.dispatchEvent(new Event('change', { bubbles: true }));
+              await tick();
+            }
+          }
+          return {
+            sizeInUseCaseBlock: Boolean(document.querySelector('.usecase-block .size-limit input')),
+            sizeInDeviceBlock: Boolean(document.querySelector('.device-block .size-limit input')),
+            deviceAfterTvUseCase,
+            hintAfterUseCase,
+            hintAfterManual: hintText(),
+            restoreBtnShown: Boolean(document.querySelector('.device-restore')),
+            error: '',
+          };
+        } catch (e) {
+          return { ...blank, error: String(e) };
+        }
+      })()`,
+    );
+    extraChecks.push(
+      [
+        '体积上限控件归属用途区（不再住进"在哪播"，一个参数只有一个主人）',
+        coupling.sizeInUseCaseBlock && !coupling.sizeInDeviceBlock,
+        coupling.error
+          ? `执行出错：${coupling.error}`
+          : `用途区内=${coupling.sizeInUseCaseBlock}，设备区内=${coupling.sizeInDeviceBlock}`,
+      ],
+      [
+        '选「老电视 / 车载 U 盘」会带出对应播放设备（预检才跑在对的判据上）',
+        coupling.deviceAfterTvUseCase === 'android-old',
+        coupling.deviceAfterTvUseCase
+          ? `设备自动变为 ${coupling.deviceAfterTvUseCase}`
+          : '设备未随用途变化',
+      ],
+      [
+        '设备提示写明"由用途自动设定"，手动改过后改口并给出恢复入口',
+        coupling.hintAfterUseCase.includes('由用途') &&
+          coupling.hintAfterManual.includes('手动改过') &&
+          coupling.restoreBtnShown,
+        `用途设定后：「${coupling.hintAfterUseCase.slice(0, 40)}」／手动改后：「${coupling.hintAfterManual.slice(0, 40)}」`,
+      ],
+    );
+
+    // 复原：切回默认用途，保持后续用例的预期
+    await evalJs<boolean>(
+      '恢复默认用途（归属检查后）',
+      `(() => {
+        const first = document.querySelector('.usecase-card');
+        if (first) first.click();
+        return true;
+      })()`,
+    );
+    await shotDelay(250);
+
+    /*
+     * 「实际输出尺寸」与竖屏适配（用户反馈："我换成手机的但是屏幕比例没变"）。
+     *
+     * 根因：分辨率档位是**上限**，实现里有"只缩不放"规则 —— 640×360 的源选 1080p，
+     * 界面写着「1080p 全高清」、产物还是 640×360。界面显示了一个它不会产出的分辨率。
+     *
+     * 现在「质量与尺寸」下方直接写出真的会输出多大（与 ffmpeg 滤镜读同一份 planOutputSize），
+     * 并新增默认关闭的「画面比例」选项。这两条断言盯的就是它们。
+     */
+    const sizePlan = await evalJs<{
+      sameValue: string;
+      sameNote: string;
+      padValue: string;
+      padNote: string;
+      offValue: string;
+      fitOptions: number;
+      error: string;
+    }>(
+      '验证"实际输出尺寸"与画面比例',
+      `(async () => {
+        const tick = () => new Promise((r) => setTimeout(r, 280));
+        const value = () => (document.querySelector('.output-size .out-value')?.textContent ?? '').trim();
+        const note = () => (document.querySelector('.output-size .out-note')?.textContent ?? '').trim();
+        const fitSel = () =>
+          [...document.querySelectorAll('.quality-block select')].find((s) =>
+            [...s.options].some((o) => o.value === 'crop'),
+          );
+        const blank = { sameValue: '', sameNote: '', padValue: '', padNote: '', offValue: '', fitOptions: 0, error: '' };
+        try {
+          const sel = fitSel();
+          if (!sel) return { ...blank, error: '未找到画面比例下拉' };
+          const fitOptions = sel.options.length;
+
+          // 默认：保持原样 → 源就是 640×360，且提示应说明"不放大"
+          const sameValue = value();
+          const sameNote = note();
+
+          // 切到竖屏补边 → 尺寸应变成 360×640（画布短边取源短边，不放大）
+          const padOpt = [...sel.options].find((o) => o.value === 'pad');
+          sel.value = padOpt.value;
+          sel.dispatchEvent(new Event('change', { bubbles: true }));
+          await tick();
+          const padValue = value();
+          const padNote = note();
+
+          // 切回保持原样，避免影响后续截图与转换用例
+          const offOpt = [...sel.options].find((o) => o.value === 'off');
+          sel.value = offOpt.value;
+          sel.dispatchEvent(new Event('change', { bubbles: true }));
+          await tick();
+          const offValue = value();
+
+          return { sameValue, sameNote, padValue, padNote, offValue, fitOptions, error: '' };
+        } catch (e) {
+          return { ...blank, error: String(e) };
+        }
+      })()`,
+    );
+    extraChecks.push(
+      [
+        '实际输出尺寸：源低于上限时显示真实尺寸并说明不放大（不再只写"1080p"）',
+        sizePlan.sameValue === '640×360' && sizePlan.sameNote.includes('不放大'),
+        sizePlan.error
+          ? `执行出错：${sizePlan.error}`
+          : `输出尺寸 ${sizePlan.sameValue}｜${sizePlan.sameNote.slice(0, 46)}`,
+      ],
+      [
+        '画面比例：切到竖屏补边后，输出尺寸变成 9:16 画布 360×640',
+        sizePlan.padValue === '360×640',
+        `竖屏后 ${sizePlan.padValue}｜${sizePlan.padNote.slice(0, 46)}`,
+      ],
+      [
+        '画面比例：切回"保持原样"能还原（默认关，不偷偷改画面）',
+        sizePlan.offValue === sizePlan.sameValue && sizePlan.fitOptions === 3,
+        `还原为 ${sizePlan.offValue}，共 ${sizePlan.fitOptions} 个比例选项`,
+      ],
+    );
+
+    /*
+     * 单独截一张「质量与尺寸」——「实际输出尺寸」与「画面比例」在这里。
+     *
+     * 为什么要专门截：这一块在首屏之下，上面两张模式截图都看不到它，
+     * 而它正是"我换成手机的但是屏幕比例没变"这两个修复的落点。
+     * 断言通过 ≠ 有人看得见证据。
+     */
+    await evalJs<boolean>(
+      '滚动到质量与尺寸以便截图',
+      `(() => {
+        const block = document.querySelector('.quality-block');
+        if (block) block.scrollIntoView({ block: 'start' });
+        return true;
+      })()`,
+    );
+    await shotDelay(450);
+    await capture('size-plan.png');
+    // 滚回顶部，保持后续截图与之前一致
+    await evalJs<boolean>(
+      '详情面板滚回顶部',
+      `(() => {
+        const sc = document.querySelector('.details-scroll');
+        if (sc) sc.scrollTop = 0;
+        return true;
+      })()`,
+    );
+    await shotDelay(300);
+
+    /*
      * 模式切换：推荐（大众）/ 自定义（专业）。
      *
      * 起因：用户反馈"很奇怪" —— 原来把用途卡片和一大堆专业参数堆在同一个面板里，
@@ -828,13 +1032,20 @@ async function runSmokeCheck(): Promise<void> {
         : '未采集',
     ]);
     extraChecks.push([
-      '推荐模式：首屏能看到"用途"与"在哪播/多大体积"',
+      '推荐模式：首屏能看到"用途"（含体积上限）与"兼容性预检"',
       Boolean(
         rec &&
           rec.blocks.some((b) => b.includes('你要拿去干什么') && !b.includes('折叠线下')) &&
-          rec.blocks.some((b) => b.includes('在哪播') && !b.includes('折叠线下')),
+          rec.blocks.some((b) => b.includes('兼容性预检') && !b.includes('折叠线下')),
       ),
-      rec ? rec.blocks.join(' | ').slice(0, 140) : '未采集',
+      /*
+       * 这条原来断言的是「在哪播 / 多大体积」在首屏。
+       * 按 D-020 把体积上限**归还给用途区**之后，用途区块高了一点，
+       * 「在哪播」被挤到折线下方（@788）—— 这是可以接受的：
+       * 设备现在由用途自动带出，属于"只用于兼容性预检"的次要信息。
+       * 于是断言改成盯"用途（含体积上限）"和"兼容性预检"这两块首屏必须可见的内容。
+       */
+      rec ? rec.blocks.join(' | ').slice(0, 160) : '未采集',
     ]);
 
     // 回到推荐模式，保持后续截图一致
@@ -1601,7 +1812,7 @@ async function runSmokeCheck(): Promise<void> {
           options: {
             presetId: 'mp4-compatible', videoCodecId: 'h264', audioCodecId: 'aac',
             qualityId: 'balanced', resolutionId: 'source', fpsId: 'source',
-            sizeLimitMb: null, deviceId: null, useCaseId: null,
+            sizeLimitMb: null, deviceId: null, useCaseId: null, fitMode: 'off',
             outputDir: null, fileNameTemplate: '{name}', overwrite: false, keepMetadata: true,
             trimStartSec: null, trimEndSec: null, subtitleStreamIndexes: [], audioStreamIndexes: []
           }

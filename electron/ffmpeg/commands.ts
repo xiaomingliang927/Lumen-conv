@@ -25,6 +25,7 @@ import {
   findResolution,
   findVideoCodec,
 } from '../../shared/presets';
+import { planOutputSize } from '../../shared/output-size';
 
 export interface BuildContext {
   probe: MediaProbeResult;
@@ -266,13 +267,24 @@ function buildVideoArgs(
     );
   }
 
-  const srcHeight = source.rotation === 90 || source.rotation === 270 ? source.width : source.height;
-  if (resolutionHeight !== null) {
-    if (srcHeight > resolutionHeight) {
-      // 只缩不放：强行放大会变糊且浪费体积
-      filters.push(`scale=-2:${resolutionHeight}:flags=lanczos`);
-      notes.push(`已缩放到 ${resolutionHeight}p（等比，宽度自动计算）`);
-    } else if (srcHeight < resolutionHeight) {
+  /*
+   * 输出尺寸与滤镜**统一由 shared/output-size.ts 计算**。
+   *
+   * 这里的改动来自一个真实缺陷：界面显示的分辨率是"上限"，而这段代码有"只缩不放"规则，
+   * 于是 640×360 的源选 1080p 时界面写着「1080p 全高清」、实际输出还是 640×360。
+   * 现在界面提示与这段滤镜链读的是同一个 planOutputSize()，不可能再对不上。
+   */
+  const sizePlan = planOutputSize(
+    { width: source.width, height: source.height, rotation: source.rotation },
+    resolutionHeight,
+    options.fitMode ?? 'off',
+  );
+  if (sizePlan.filters.length > 0) {
+    filters.push(...sizePlan.filters);
+    notes.push(sizePlan.note);
+  } else if (resolutionHeight !== null && source.rotation !== 90 && source.rotation !== 270) {
+    const srcHeight = source.height;
+    if (srcHeight < resolutionHeight) {
       notes.push(`源分辨率 ${srcHeight}p 低于目标 ${resolutionHeight}p，已自动保持原分辨率（不放大）`);
     }
   }

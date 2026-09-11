@@ -46,6 +46,9 @@ import {
 import type { ConversionOptions } from '@shared/types';
 import { CONTAINERS, VIDEO_CODECS, AUDIO_CODECS } from '@shared/presets';
 import { DEVICES, USE_CASES, findDevice, findUseCase } from '@shared/use-cases';
+import { FIT_MODES, planOutputSize } from '@shared/output-size';
+import type { FitMode } from '@shared/output-size';
+import SizeLimitField from './SizeLimitField.vue';
 import {
   fileExtension,
   formatBitrate,
@@ -119,12 +122,6 @@ async function setAppMode(mode: 'recommended' | 'custom'): Promise<void> {
   await updateSettings({ appMode: mode });
 }
 
-/** 体积上限输入：空字符串 / 0 / 负数都视为"不限制" */
-function setSizeLimit(raw: string): void {
-  const n = Number(raw);
-  setGlobal({ sizeLimitMb: raw.trim() === '' || !Number.isFinite(n) || n <= 0 ? null : n });
-}
-
 /**
  * 选择用途：一次把容器、编码器、分辨率、质量、体积上限都设好。
  * 这是"用户只说他要干什么、技术决策由软件负责"的核心入口。
@@ -144,6 +141,15 @@ function chooseUseCase(id: string): void {
     qualityId: uc.qualityId,
     resolutionId: uc.resolutionId,
     sizeLimitMb: uc.sizeLimitMb,
+    /*
+     * 设备**跟着用途走**（2026-09 修订，见 D-020）。
+     *
+     * 漏掉这一行就会出现：用途写着「老电视 / 车载 U 盘」，设备却还是上一个用途的
+     * 「安卓手机」—— 兼容性预检按手机的判据跑，等于这个用途最该做的检查没做。
+     * （这里的 setGlobal 与 shared/use-cases.ts 的 applyUseCase 是两条写入路径，
+     *  改动时两处都要跟上；自检里有一条专门断言它们的结果一致。）
+     */
+    deviceId: uc.deviceId,
     subtitleStreamIndexes: [],
     audioStreamIndexes: [],
   });
@@ -260,6 +266,51 @@ const planSummary = computed(() => {
   if (quality && !options.value.sizeLimitMb) parts.push(quality.label);
   if (options.value.sizeLimitMb) parts.push(`≤${options.value.sizeLimitMb} MB`);
   return { useCase: uc?.label ?? '自定义组合', detail: parts.join(' · ') };
+});
+
+/**
+ * 这次**实际会输出多大**（以及为什么）。
+ *
+ * 与 ffmpeg 滤镜链读同一份 `planOutputSize()`，所以界面上的数字就是产物里的数字。
+ * 这是修"我换成手机的但是屏幕比例没变"留下的：以前界面只显示分辨率**上限**，
+ * 640×360 的源选 1080p，界面写 1080p、产物还是 640×360。
+ */
+const outputSizePlan = computed(() => {
+  const v = video.value;
+  if (!v || isAudioOnly.value || v.displayWidth <= 0 || v.displayHeight <= 0) return null;
+  const res = RESOLUTION_PRESETS.find((r) => r.id === eff.value.resolutionId);
+  return planOutputSize(
+    { width: v.displayWidth, height: v.displayHeight, rotation: 0 },
+    res?.height ?? null,
+    (eff.value.fitMode ?? 'off') as FitMode,
+  );
+});
+
+/**
+ * 播放设备现在**由用途带出**，所以提示要说清"这个值是哪来的、能不能改"。
+ *
+ * 以前设备下拉和用途卡片各问一遍"给什么设备用"，却互不相干：
+ * 选「老电视 / 车载 U 盘」不会把设备设成老安卓电视，兼容性预检按"不限定"跑，
+ * 等于那个用途最该做的检查是空的。见 shared/use-cases.ts 的 2026-09 修订。
+ */
+const deviceHint = computed(() => {
+  const uc = activeUseCase.value;
+  const dev = activeDevice.value;
+  const note = dev?.note ?? '用于提前检查转出来的文件能不能播';
+  if (!uc?.deviceId || uc.deviceId === 'any') return note;
+  const rec = findDevice(uc.deviceId);
+  if (!rec) return note;
+  if (options.value.deviceId === uc.deviceId) {
+    return `由用途「${uc.label}」自动设定 · ${note}`;
+  }
+  return `已手动改过（用途「${uc.label}」推荐：${rec.label}）· ${note}`;
+});
+
+/** 设备被手动改成非用途推荐值时，给一个"用回推荐"的出口 */
+const deviceDeviated = computed(() => {
+  const uc = activeUseCase.value;
+  if (!uc?.deviceId || uc.deviceId === 'any') return false;
+  return options.value.deviceId !== uc.deviceId;
 });
 
 /** 专业参数里的容器/格式下拉：按分组列出全部预设 */
@@ -859,6 +910,19 @@ void VIDEO_CODECS;
         <div v-if="activeUseCase?.tip" class="alert alert-info preset-tip">
           <span>💡</span><span>{{ activeUseCase.tip }}</span>
         </div>
+
+        <!--
+          体积上限住在用途区：它本来就是用途的一部分（"发微信就是 ≤100MB"）。
+          以前它住在「在哪播 / 多大体积」里，于是同一个参数有两个主人 —— 用户在那儿改数字，
+          改的其实是用途的推荐值，而且切用途时数字会莫名其妙地跳。见 D-020。
+        -->
+        <div class="field-grid usecase-limit">
+          <SizeLimitField
+            :value="options.sizeLimitMb"
+            context="usecase"
+            @update="setGlobal({ sizeLimitMb: $event })"
+          />
+        </div>
       </section>
 
       <!--
@@ -899,10 +963,11 @@ void VIDEO_CODECS;
         </div>
       </section>
 
-      <!-- ③ 播放在什么设备上 + 体积上限 -->
+      <!-- ③ 播放在什么设备上（体积上限已归还给它的主人：用途 / 质量与尺寸） -->
       <section class="block device-block">
         <header class="block-head">
-          <h4>在哪播 / 多大体积</h4>
+          <h4>在哪播</h4>
+          <span class="muted">只用于兼容性预检</span>
         </header>
 
         <div class="field-grid">
@@ -915,40 +980,14 @@ void VIDEO_CODECS;
             >
               <option v-for="d in DEVICES" :key="d.id" :value="d.id">{{ d.label }}</option>
             </select>
-            <span class="field-hint">
-              {{ activeDevice?.note ?? '用于提前检查转出来的文件能不能播' }}
-            </span>
-          </label>
-
-          <label class="field">
-            <span class="field-label">目标体积上限</span>
-            <div class="size-limit">
-              <input
-                class="input mono"
-                type="number"
-                min="0"
-                step="10"
-                placeholder="不限"
-                :value="options.sizeLimitMb ?? ''"
-                @input="setSizeLimit(($event.target as HTMLInputElement).value)"
-              />
-              <span class="muted">MB</span>
-              <button
-                v-if="options.sizeLimitMb"
-                class="btn btn-sm btn-ghost"
-                title="取消体积上限，回到按质量档转换"
-                @click="setGlobal({ sizeLimitMb: null })"
-              >
-                不限
-              </button>
-            </div>
-            <span class="field-hint">
-              {{
-                options.sizeLimitMb
-                  ? '用两遍编码精确命中，耗时约为普通转换的两倍'
-                  : '填一个数字即可按目标体积压缩（例如微信常用 100MB）'
-              }}
-            </span>
+            <span class="field-hint">{{ deviceHint }}</span>
+            <button
+              v-if="deviceDeviated"
+              class="btn btn-sm btn-ghost device-restore"
+              @click="setGlobal({ deviceId: activeUseCase?.deviceId ?? 'any' })"
+            >
+              用回用途推荐
+            </button>
           </label>
         </div>
       </section>
@@ -988,7 +1027,7 @@ void VIDEO_CODECS;
           </label>
 
           <label v-if="!isAudioOnly" class="field">
-            <span class="field-label">分辨率</span>
+            <span class="field-label">分辨率<small class="muted">（上限）</small></span>
             <select
               class="select"
               :value="eff.resolutionId"
@@ -997,6 +1036,23 @@ void VIDEO_CODECS;
             >
               <option v-for="r in RESOLUTION_PRESETS" :key="r.id" :value="r.id">
                 {{ r.label }}<template v-if="r.id !== 'source'"> — {{ r.description }}</template>
+              </option>
+            </select>
+          </label>
+
+          <!--
+            画面比例：默认"保持原样"。
+            补黑边 / 裁剪都是用户看得见的画面损失，所以必须是显式选择，不能由用途偷偷决定。
+          -->
+          <label v-if="!isAudioOnly && !isRemux" class="field">
+            <span class="field-label">画面比例</span>
+            <select
+              class="select"
+              :value="eff.fitMode ?? 'off'"
+              @change="setGlobal({ fitMode: ($event.target as HTMLSelectElement).value as FitMode })"
+            >
+              <option v-for="f in FIT_MODES" :key="f.id" :value="f.id">
+                {{ f.label }} — {{ f.description }}
               </option>
             </select>
           </label>
@@ -1013,6 +1069,28 @@ void VIDEO_CODECS;
               <option v-for="f in FPS_PRESETS" :key="f.id" :value="f.id">{{ f.label }}</option>
             </select>
           </label>
+        </div>
+
+        <!--
+          实际输出尺寸 —— 这一行是修一个真实缺陷留下的。
+          用户反馈"我换成手机的但是屏幕比例没变"：界面显示的分辨率是**上限**，
+          而实现有"只缩不放"规则，640×360 的源选 1080p 输出还是 640×360。
+          界面显示了一个它不会产出的分辨率。现在这里直接写出**真的会输出多大**，
+          数值与 ffmpeg 滤镜读同一份 planOutputSize()。
+        -->
+        <div v-if="outputSizePlan" class="output-size" :class="{ changed: outputSizePlan.changes }">
+          <span class="out-label">输出尺寸</span>
+          <span class="out-value mono">{{ outputSizePlan.width }}×{{ outputSizePlan.height }}</span>
+          <span class="out-note">{{ outputSizePlan.note }}</span>
+        </div>
+
+        <!-- 自定义模式下体积上限属于这里：设了它，上面的质量档位就不再参与决定码率 -->
+        <div v-if="appMode === 'custom'" class="field-grid quality-limit">
+          <SizeLimitField
+            :value="options.sizeLimitMb"
+            context="quality"
+            @update="setGlobal({ sizeLimitMb: $event })"
+          />
         </div>
       </section>
     </div>
@@ -1123,6 +1201,50 @@ void VIDEO_CODECS;
   display: flex;
   flex-direction: column;
   gap: 5px;
+}
+
+/* ---------- 实际输出尺寸（修"选了 1080p 输出却没变"留下的） ---------- */
+
+.output-size {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 10px;
+  padding: 7px 10px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-subtle);
+  font-size: 11.5px;
+}
+.output-size .out-label {
+  color: var(--text-muted);
+  flex: none;
+}
+.output-size .out-value {
+  font-weight: 600;
+  color: var(--text-secondary);
+  flex: none;
+}
+.output-size.changed .out-value {
+  color: var(--accent);
+}
+.output-size .out-note {
+  color: var(--text-secondary);
+  flex: 1;
+  min-width: 0;
+}
+
+/* 体积上限控件：在用途区 / 质量区的落位 */
+.usecase-limit,
+.quality-limit {
+  margin-top: 12px;
+}
+
+/* 设备"用回用途推荐"按钮 */
+.device-restore {
+  align-self: flex-start;
+  margin-top: 6px;
 }
 
 /* ---------- 视频信息：收起态摘要 ---------- */

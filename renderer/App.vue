@@ -71,6 +71,23 @@ onMounted(async () => {
 
   await initStore();
   booted.value = true;
+
+  /*
+   * Shell 集成：接手"启动时通过命令行传进来的文件"（2026-09 新增，见 D-024）。
+   *
+   * 覆盖三种入口：把文件拖到 exe 图标上、「发送到 → Lumen-conv 转换」、
+   * 资源管理器右键「用 Lumen-conv 转换」。第二条路径（应用已经开着时又右键一次）
+   * 由主进程的 second-instance 通过事件推过来。
+   *
+   * 走的是与拖拽/选择文件**完全相同**的 addFiles，所以探测、缩略图、失败标红
+   * 这些行为都一致，不是另开一条捷径。
+   */
+  const pending = await window.converter.takePendingFiles();
+  if (pending.ok && pending.data.length > 0) await addFiles(pending.data);
+  window.converter.onOpenExternalFiles((paths: string[]) => {
+    void addFiles(paths);
+  });
+
   // 给自动化界面自检（npm run smoke:ui）用的就绪标志：
   // 仅凭 DOM 是否存在无法判断 store 是否已加载完数据 —— 设置页会因为
   // settings 仍为 null 而整块不渲染，早期版本因此截到一张空白设置页。

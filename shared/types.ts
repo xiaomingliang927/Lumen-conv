@@ -436,6 +436,18 @@ export interface ConverterApi {
   getCapabilities(forceRefresh?: boolean): Promise<IpcResponse<SystemCapabilities>>;
   /** 指定目录所在磁盘的剩余字节数（开转前的磁盘空间预检用） */
   freeSpace(path: string): Promise<IpcResponse<number>>;
+
+  /* Shell 集成（命令行文件 / 发送到 / 右键菜单） */
+  /** 取走"启动时通过命令行传进来"的文件路径，取完即清空（幂等） */
+  takePendingFiles(): Promise<IpcResponse<string[]>>;
+  /** 查询当前是否已加入「发送到」与右键菜单 */
+  getShellIntegration(): Promise<
+    IpcResponse<{ sendTo: boolean; contextMenu: boolean; exePath: string; supported: boolean }>
+  >;
+  /** 加入 / 移除「发送到」与右键菜单（仅 HKCU，可撤销） */
+  setShellIntegration(enable: boolean): Promise<IpcResponse<{ ok: boolean; message: string }>>;
+  /** 第二个实例把文件转交给当前窗口时触发 */
+  onOpenExternalFiles(cb: (paths: string[]) => void): () => void;
   detectFfmpeg(): Promise<IpcResponse<FfmpegDetectResult>>;
 
   /* 设置 */

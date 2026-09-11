@@ -75,12 +75,92 @@ if (!gotLock) {
     app.quit();
   }
 } else {
-  app.on('second-instance', () => {
+  app.on('second-instance', (_event, argv) => {
+    /*
+     * 第二个实例把命令行里的文件路径转交给已经开着的窗口（2026-09 新增，见 D-024）。
+     * 这样"选中几个视频 → 右键 → 用 Lumen-conv 转换"在应用已经开着时也能work，
+     * 而不是弹一句"已经有一个实例在运行"然后什么都不做。
+     */
+    const more = videoPathsFromArgv(argv);
+    if (more.length > 0) pendingOpenPaths.push(...more);
     if (mainWindow) {
       if (mainWindow.isMinimized()) mainWindow.restore();
       mainWindow.focus();
+      if (more.length > 0) {
+        mainWindow.webContents.send('files:open-external', more);
+        pendingOpenPaths.length = 0;
+      }
+    } else {
+      void createWindow();
     }
   });
+}
+
+/* ------------------------ 命令行传入的文件（Shell 集成） ------------------------ */
+
+/** 支持的视频/音频扩展名（与「选择文件」对话框保持一致） */
+const MEDIA_EXTENSIONS = new Set([
+  'mp4', 'mkv', 'mov', 'avi', 'flv', 'wmv', 'webm', 'm4v', 'mpg', 'mpeg', 'ts', 'm2ts',
+  '3gp', 'rmvb', 'rm', 'vob', 'ogv', 'mxf', 'gif',
+  'mp3', 'm4a', 'aac', 'wav', 'flac', 'ogg', 'wma', 'opus',
+]);
+
+/**
+ * 从命令行参数里挑出**真实存在的媒体文件**。
+ *
+ * 为什么要挑而不是"取最后一个参数"：
+ *   · 启动命令里夹杂着 Electron 自己的开关（`--smoke`、`--smoke-file=…`、
+ *     开发态的 `.`、打包态的 exe 路径），不能一股脑当成文件；
+ *   · 右键菜单/发送到/拖到 exe 上，传进来的就是普通路径，可能带引号、可能是相对路径；
+ *   · 误把开关当文件会让应用一启动就报"文件不存在"，比不支持更糟。
+ * 所以判据是"存在 + 扩展名在支持列表里"，两条都满足才收。
+ */
+function videoPathsFromArgv(argv: string[]): string[] {
+  const out: string[] = [];
+  for (const raw of argv) {
+    if (!raw || raw.startsWith('-')) continue;
+    const cleaned = raw.replace(/^"|"$/g, '');
+    const ext = path.extname(cleaned).slice(1).toLowerCase();
+    if (!MEDIA_EXTENSIONS.has(ext)) continue;
+    const abs = path.isAbsolute(cleaned) ? cleaned : path.resolve(cleaned);
+    if (!existsSync(abs)) continue;
+    out.push(abs);
+  }
+  return out;
+}
+
+/** 首屏渲染完成前收到的文件先存这里，渲染进程就绪后来取 */
+const pendingOpenPaths: string[] = [];
+
+/*
+ * 启动时就把命令行里的媒体文件收下来（在 app ready 之前）。
+ *
+ * 打包态 argv[0] 是 exe 自己，开发态前两个参数是 electron 与 `.`，
+ * 所以从后面开始扫 —— 但真正的判据是"存在 + 扩展名在支持列表里"，
+ * 位置只是省点力气（见 videoPathsFromArgv 的注释）。
+ */
+pendingOpenPaths.push(...videoPathsFromArgv(process.argv.slice(app.isPackaged ? 1 : 2)));
+
+/**
+ * 「发送到」菜单与资源管理器右键菜单的注册/注销（仅 Windows）。
+ *
+ * 两条都写 **HKCU**（当前用户），不碰 HKLM、不动文件关联：
+ *   · 不动 `.mp4` 的默认打开方式 —— 那会抢走用户原有的播放器，属于越界；
+ *   · 只加"用 Lumen-conv 转换"这一个动词，卸载/关闭开关时能干净删掉。
+ * 实现走 PowerShell 的注册表 cmdlet（不引第三方依赖），并回读校验。
+ */
+function shellIntegrationTargets(): {
+  sendToLink: string;
+  regKey: string;
+  exePath: string;
+} {
+  const exePath = app.isPackaged ? app.getPath('exe') : process.execPath;
+  const appData = app.getPath('appData');
+  return {
+    sendToLink: path.join(appData, 'Microsoft', 'Windows', 'SendTo', 'Lumen-conv 转换.lnk'),
+    regKey: 'HKCU\\Software\\Classes\\SystemFileAssociations\\video\\shell\\LumenConv',
+    exePath,
+  };
 }
 
 /* ------------------------------ 自定义协议 ------------------------------ */
@@ -200,6 +280,74 @@ async function runSmokeCheck(): Promise<void> {
   };
 
   const shotDelay = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+  /*
+   * 额外检查项的收集数组。
+   *
+   * 声明位置比原来提前了：命令行文件那条检查在更靠前的地方就要往里塞结果
+   * （见下面的 cliFiles 分支）。它本来就是"整轮自检共用"的累加器，
+   * 放在前面更符合它的作用域。
+   */
+  const extraChecks: [string, boolean, string][] = [];
+
+  /*
+   * Shell 集成的第一层：**命令行传入的文件要自动出现在列表里**（2026-09 新增，D-024）。
+   *
+   * 这条只在真的带了位置参数时跑（`electron . --smoke <文件>`），
+   * 覆盖的是"右键 → 用 Lumen-conv 转换 / 发送到 / 拖到 exe 上"这一整类入口 ——
+   * 它们最终都是"进程启动时 argv 里带一个媒体路径"。
+   * 走的是 App.vue 里 takePendingFiles → addFiles 的路径，与拖拽完全一致。
+   */
+  const cliFiles = videoPathsFromArgv(process.argv.slice(app.isPackaged ? 1 : 2));
+  if (cliFiles.length > 0) {
+    const deadline = Date.now() + 8000;
+    let loaded: { names: string[]; count: number } = { names: [], count: 0 };
+    for (;;) {
+      loaded = await evalJs<{ names: string[]; count: number }>(
+        '检查命令行文件是否已加载',
+        `(() => ({
+          count: document.querySelectorAll('.file-card').length,
+          names: [...document.querySelectorAll('.file-card .file-name')].map((n) => n.textContent.trim()),
+        }))()`,
+      );
+      if (loaded.count > 0 || Date.now() > deadline) break;
+      await shotDelay(300);
+    }
+    const want = path.basename(cliFiles[0]);
+    extraChecks.push([
+      'Shell 集成：命令行传入的文件被自动加载（右键/发送到/拖到 exe 上的共同入口）',
+      loaded.names.some((n) => n.includes(want)),
+      `argv 传入 ${want} → 列表 ${loaded.count} 个：${loaded.names.join(', ') || '（空）'}`,
+    ]);
+  }
+
+  /*
+   * Shell 集成的第二层：**开发态必须拒绝写注册表**。
+   *
+   * 这条是安全性断言，不是功能性断言：开发态的 exe 是 node_modules 里的 electron.exe，
+   * 一旦写进注册表，用户点右键会启动一个不带参数的裸 Electron —— 比没有这个功能更糟。
+   * 所以这里必须验证"拒绝 + 给出人话原因"，而不是"能写进去"。
+   * 真正写入与撤销的行为在便携版上由人工点一次验证（见 docs/TEST_CASES.md 的 B 部分）。
+   */
+  if (!app.isPackaged) {
+    const shell = await evalJs<{ supported: boolean; refused: string; ok: boolean }>(
+      '检查 Shell 集成在开发态的自我保护',
+      `(async () => {
+        const info = await window.converter.getShellIntegration();
+        const set = await window.converter.setShellIntegration(true);
+        return {
+          supported: info.ok ? info.data.supported : true,
+          ok: set.ok ? set.data.ok : true,
+          refused: set.ok ? set.data.message : String(set.error),
+        };
+      })()`,
+    );
+    extraChecks.push([
+      'Shell 集成：开发态拒绝写注册表并说明原因（避免注册一个裸 electron.exe）',
+      shell.supported === false && shell.ok === false && shell.refused.includes('开发态'),
+      shell.refused.slice(0, 90),
+    ]);
+  }
 
   const outDir = path.join(smokeBaseDir(), 'docs', 'screenshots');
   const fs = await import('node:fs');
@@ -359,9 +507,6 @@ async function runSmokeCheck(): Promise<void> {
   };
 
   await capture('main.png');
-
-  /** 会在主检查项之后追加的额外检查 */
-  const extraChecks: [string, boolean, string][] = [];
 
   /* ---- 可选：加载一个真实视频后再截一张，用于人工确认信息面板与缩略图 ---- */
   const smokeFileArg = process.argv.find((a) => a.startsWith('--smoke-file='));
@@ -1272,8 +1417,7 @@ async function runSmokeCheck(): Promise<void> {
         : '未采集',
     ]);
     extraChecks.push([
-      '推荐模式：首屏能看到"用途"（含体积上限）与"兼容性预检"',
-      Boolean(
+      '推荐模式：首屏能看到"用途"（含体积上限）与"兼容性预检"',      Boolean(
         rec &&
           rec.blocks.some((b) => b.includes('你要拿去干什么') && !b.includes('折叠线下')) &&
           rec.blocks.some((b) => b.includes('兼容性预检') && !b.includes('折叠线下')),
@@ -2416,13 +2560,25 @@ async function runSmokeCheck(): Promise<void> {
     ],
   );
 
+  /*
+   * 「空状态引导已显示」这条在**命令行带了文件**时要反过来断言。
+   *
+   * 传了文件进来，空状态本来就该消失（那才是对的）—— 照原样断言会得出
+   * "空状态没显示 = 失败"的假结论（实测踩到）。所以这里按同一份事实反过来判：
+   * 没有文件时要求空状态在；有文件时要求空状态不在。
+   */
+  const expectEmptyState = cliFiles.length === 0;
   const checks: [string, boolean, string][] = [
     ['窗口标题正确', report.title.includes('Lumen-conv'), report.title],
     ['标题栏已渲染', report.hasTitlebar, ''],
     ['侧边导航已渲染', report.hasSidebar, `${report.navItems} 个导航项`],
     ['文件列表区已渲染', report.hasFilePane, ''],
     ['详情面板已渲染', report.hasDetails, ''],
-    ['空状态引导已显示', report.emptyStateVisible, report.emptyTitle],
+    [
+      expectEmptyState ? '空状态引导已显示' : '命令行带了文件时不显示空状态（正确）',
+      expectEmptyState ? report.emptyStateVisible : !report.emptyStateVisible,
+      expectEmptyState ? report.emptyTitle : `列表里已有文件，空状态${report.emptyStateVisible ? '仍在（异常）' : '已隐藏'}`,
+    ],
     ['全局样式已加载', report.cssLoaded.length > 0, `--accent=${report.cssLoaded}, body=${report.bodyBg}`],
     ['主题已应用', Boolean(report.themeAttr), `data-theme=${report.themeAttr}`],
     ['preload API 已注入', report.apiReady, 'window.converter.probe'],
@@ -2660,6 +2816,88 @@ function registerIpc(): void {
     } catch {
       return 0;
     }
+  });
+
+  /* ---------------- Shell 集成（命令行文件 / 发送到 / 右键菜单） ---------------- */
+
+  /** 渲染进程就绪后来取"启动时通过命令行传进来的文件"，取完即清空 */
+  handle<string[]>('files:take-pending', () => {
+    const out = [...pendingOpenPaths];
+    pendingOpenPaths.length = 0;
+    return out;
+  });
+
+  handle<{ sendTo: boolean; contextMenu: boolean; exePath: string; supported: boolean }>(
+    'shell:get-integration',
+    async () => {
+      const { sendToLink, regKey, exePath } = shellIntegrationTargets();
+      const supported = process.platform === 'win32' && app.isPackaged;
+      if (!supported) return { sendTo: false, contextMenu: false, exePath, supported };
+      const r = await exec(
+        'powershell.exe',
+        [
+          '-NoProfile',
+          '-NonInteractive',
+          '-Command',
+          `$ErrorActionPreference='SilentlyContinue';` +
+            `[bool](Test-Path -LiteralPath '${sendToLink.replace(/'/g, "''")}');` +
+            `[bool](Test-Path -LiteralPath '${regKey.replace(/'/g, "''")}')`,
+        ],
+        { timeoutMs: 15000 },
+      );
+      const [sendTo, contextMenu] = (r.stdout ?? '')
+        .split(/\r?\n/)
+        .map((l) => l.trim().toLowerCase() === 'true');
+      return { sendTo: Boolean(sendTo), contextMenu: Boolean(contextMenu), exePath, supported };
+    },
+  );
+
+  handle<{ ok: boolean; message: string }>('shell:set-integration', async (enable: boolean) => {
+    const { sendToLink, regKey, exePath } = shellIntegrationTargets();
+    if (process.platform !== 'win32') {
+      return { ok: false, message: '目前只支持 Windows' };
+    }
+    if (!app.isPackaged) {
+      /*
+       * 开发态刻意不允许写入：这时 exePath 是 node_modules 里的 electron.exe，
+       * 写进注册表后用户点右键会启动一个没有参数的裸 Electron —— 那是坑人。
+       */
+      return { ok: false, message: '开发态不写注册表（exe 路径是 electron.exe，注册了也用不了）；请用便携版开启' };
+    }
+
+    const esc = (s: string) => s.replace(/'/g, "''");
+    const script = enable
+      ? `$ErrorActionPreference='Stop';
+         $exe='${esc(exePath)}';
+         # 1) 发送到：放一个指向 exe 的快捷方式
+         $sendTo=Split-Path -Parent '${esc(sendToLink)}';
+         if (-not (Test-Path -LiteralPath $sendTo)) { New-Item -ItemType Directory -Path $sendTo -Force | Out-Null }
+         $ws=New-Object -ComObject WScript.Shell;
+         $lnk=$ws.CreateShortcut('${esc(sendToLink)}');
+         $lnk.TargetPath=$exe; $lnk.Arguments='"'"'%1'"'"''; $lnk.IconLocation=$exe; $lnk.Save();
+         # 2) 右键菜单：只加一个动词，不动文件关联
+         $key='${esc(regKey)}';
+         New-Item -Path $key -Force | Out-Null;
+         New-ItemProperty -Path $key -Name '(default)' -Value '用 Lumen-conv 转换' -Force | Out-Null;
+         New-ItemProperty -Path $key -Name 'Icon' -Value $exe -Force | Out-Null;
+         New-Item -Path "$key\\command" -Force | Out-Null;
+         New-ItemProperty -Path "$key\\command" -Name '(default)' -Value ('"' + $exe + '" "%1"') -Force | Out-Null;
+         'OK'`
+      : `$ErrorActionPreference='SilentlyContinue';
+         Remove-Item -LiteralPath '${esc(sendToLink)}' -Force;
+         Remove-Item -Path '${esc(regKey)}' -Recurse -Force;
+         'OK'`;
+
+    const r = await exec('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], {
+      timeoutMs: 20000,
+    });
+    if (r.code !== 0) {
+      return { ok: false, message: (r.stderr || '操作失败').slice(0, 200) };
+    }
+    return {
+      ok: true,
+      message: enable ? '已加入「发送到」菜单与右键菜单' : '已移除「发送到」与右键菜单项',
+    };
   });
   handle<boolean>('jobs:open-output', async (id: string) => {
     const job = engine.get(id);

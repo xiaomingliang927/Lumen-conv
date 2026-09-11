@@ -59,6 +59,19 @@ const api: ConverterApi = {
   detectFfmpeg: () => call<FfmpegDetectResult>('ffmpeg:detect'),
   freeSpace: (p: string) => call<number>('system:free-space', p),
 
+  takePendingFiles: () => call<string[]>('files:take-pending'),
+  getShellIntegration: () =>
+    call<{ sendTo: boolean; contextMenu: boolean; exePath: string; supported: boolean }>(
+      'shell:get-integration',
+    ),
+  setShellIntegration: (enable: boolean) =>
+    call<{ ok: boolean; message: string }>('shell:set-integration', enable),
+  onOpenExternalFiles: (cb: (paths: string[]) => void) => {
+    const handler = (_e: unknown, paths: string[]) => cb(paths);
+    ipcRenderer.on('files:open-external', handler);
+    return () => ipcRenderer.removeListener('files:open-external', handler);
+  },
+
   getSettings: () => call<AppSettings>('settings:get'),
   saveSettings: (patch) => call<AppSettings>('settings:save', patch),
   resetSettings: () => call<AppSettings>('settings:reset'),

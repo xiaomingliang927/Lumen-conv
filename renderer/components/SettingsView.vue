@@ -7,7 +7,7 @@
  *  2. 「诊断」—— 显示 ffmpeg 实际路径与编码器可用性，
  *     让用户（和评审）能自己确认环境是否正常，而不是只看到一个「转换失败」。
  */
-import { computed, ref } from 'vue';
+import { computed, onMounted, ref } from 'vue';
 import { applyTheme, capabilities, settings, showToast, updateSettings } from '@/composables/useStore';
 import type { FfmpegDetectResult } from '@shared/types';
 
@@ -112,6 +112,39 @@ async function resetAll(): Promise<void> {
     resetting.value = false;
   }
 }
+
+/* ---------------- Shell 集成（发送到 / 右键菜单） ---------------- */
+
+const shellInfo = ref<{ sendTo: boolean; contextMenu: boolean; exePath: string; supported: boolean } | null>(
+  null,
+);
+const shellBusy = ref(false);
+/** 两条都开了才算"已开启"（只开一条也算半成品，界面如实显示） */
+const shellOn = computed(() => Boolean(shellInfo.value?.sendTo && shellInfo.value?.contextMenu));
+
+async function refreshShell(): Promise<void> {
+  const res = await window.converter.getShellIntegration();
+  if (res.ok) shellInfo.value = res.data;
+}
+
+async function toggleShell(enable: boolean): Promise<void> {
+  shellBusy.value = true;
+  try {
+    const res = await window.converter.setShellIntegration(enable);
+    if (!res.ok) {
+      showToast(`操作失败：${res.error}`, 'danger');
+      return;
+    }
+    showToast(res.data.message, res.data.ok ? 'success' : 'danger', 5000);
+    await refreshShell();
+  } finally {
+    shellBusy.value = false;
+  }
+}
+
+onMounted(() => {
+  void refreshShell();
+});
 </script>
 
 <template>
@@ -292,6 +325,43 @@ async function resetAll(): Promise<void> {
               @click="patch({ theme: t.value })"
             >
               {{ t.label }}
+            </button>
+          </div>
+        </div>
+      </section>
+
+      <!--
+        Shell 集成（2026-09 新增，见 D-024）。
+        两条都只写 HKCU、可一键撤销；**不动文件关联**（不抢用户原有的默认播放器）。
+      -->
+      <section class="card">
+        <header class="card-head">
+          <h3>系统集成</h3>
+          <span class="muted">让它更像一个桌面工具，而不是"必须先打开再拖文件"</span>
+        </header>
+
+        <div class="pref-row">
+          <div class="pref-text">
+            <strong>「发送到」菜单 + 资源管理器右键菜单</strong>
+            <span class="muted">
+              开启后：右键任意视频 →「用 Lumen-conv 转换」；或右键 →「发送到」→ Lumen-conv。
+              两条都只写当前用户（HKCU），随时可以在这里关掉。
+              不会改动视频文件的默认打开方式。
+            </span>
+            <span v-if="shellInfo && !shellInfo.supported" class="muted">
+              当前形态不支持（开发态不写注册表：这时 exe 是 electron.exe，注册了也启动不了；
+              请用便携版开启）
+            </span>
+            <span v-else-if="shellInfo" class="mono muted">exe：{{ shellInfo.exePath }}</span>
+          </div>
+          <div class="shell-actions">
+            <span v-if="shellOn" class="chip chip-success">已开启</span>
+            <button
+              class="btn btn-sm"
+              :disabled="shellBusy || !shellInfo?.supported"
+              @click="toggleShell(!shellOn)"
+            >
+              {{ shellBusy ? '处理中…' : shellOn ? '移除' : '一键开启' }}
             </button>
           </div>
         </div>
@@ -513,6 +583,13 @@ async function resetAll(): Promise<void> {
   accent-color: var(--accent);
   width: 14px;
   height: 14px;
+}
+
+.shell-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: none;
 }
 
 .about {

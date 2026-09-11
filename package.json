@@ -35,7 +35,8 @@
     "start": "npm run build && electron .",
     "dist": "npm run build && electron-builder --win",
     "dist:portable": "node scripts/package-portable.mjs --build",
-    "dist:nsis": "npm run build && electron-builder --win nsis"
+    "dist:nsis": "npm run build && electron-builder --win nsis",
+    "smoke:ui:cli": "npm run build && electron . --smoke test-assets/samples/sample-hevc.mkv"
   },
   "dependencies": {},
   "devDependencies": {

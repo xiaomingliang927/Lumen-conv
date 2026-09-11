@@ -28,8 +28,10 @@ desktop.ini
 resources/bin/
 .downloads/
 
-# 测试产物（样本视频由测试脚本用 lavfi 现场合成，无需入库）
-test-assets/output/
-test-assets/samples/
+# 测试产物与样本（全部由脚本现场合成，不进仓库）
+#   npm run samples        生成 test-assets/samples/ 下的真实场景素材
+#   npm run smoke          产物写到 test-assets/output/
+#   npm run test:real:convert  产物写到 test-assets/output-real/
+test-assets/
 *.tmp
 *.part

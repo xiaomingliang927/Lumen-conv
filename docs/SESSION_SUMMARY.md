@@ -243,7 +243,7 @@ release/Lumen-conv-便携版/Lumen-conv.exe --smoke --smoke-file=<绝对路径> 
 指向 `...\resources\app.asar`（一个**文件**），自检代码拿它当目录用，便携版上直接抛 `ENOTDIR`。
 根因与修复见 5.1 第 9 条。
 
-#### 端到端冒烟测试：`npm run smoke` **50 项通过 / 0 失败**s
+#### 端到端冒烟测试：`npm run smoke` **51 项通过 / 0 失败**s
 
 冒烟测试不启动界面，而是用 esbuild 把 `electron/ffmpeg/` 下的产品模块打包成 ESM、
 把 `electron` 指向测试桩（`scripts/test-stubs/electron.mjs`）后**直接调用与主进程相同的代码**，
@@ -327,7 +327,7 @@ release/Lumen-conv-便携版/Lumen-conv.exe --smoke --smoke-file=<绝对路径> 
 | --- | --- |
 | **NSIS 安装包没有产出** | `npm run dist:nsis`（`electron-builder --win nsis`）在本机**做不出来**：需要额外工具链（`app-builder-bin` / `nsis` / `winCodeSign`）与一份与 `@electron/get` **不通用**的 Electron 缓存，受限网络下两次实测都卡在同一处以 `Timeout awaiting 'request' for 600000ms` 失败（详见 4.3）。所以"安装后 `extraResources` 能把 ffmpeg/ffprobe 释放到 `resources/bin` 且能执行"这条**在安装包形态下仍未验证**；**便携版形态下已验证**（`resources/bin` 就是在那个位置，44/44 通过） |
 | **便携版 exe 没有图标与版本信息** | `package-portable.mjs` 会调用 `electron-winstaller` 附带的 `rcedit.exe` 写图标与版本信息，但该版本 rcedit 在**路径含非 ASCII 字符**时（本项目路径含中文）报 `Fatal error: Unable to load file`，脚本如实跳过。实测 `Lumen-conv.exe` 的版本信息仍为 Electron 原值。**脚本刻意不做环境相关绕行**（例如复制到临时 ASCII 路径再改回），需要带图标的正式安装包时应在有网络的环境跑 `npm run dist:nsis` |
-| 旋转自动转正（transpose 滤镜） | 冒烟测试自建了带 `rotate=90` 元数据的样本，但**这份 ffmpeg 构建没有保留该元数据**（探测回来 `rotation=0`），用例自行跳过并如实打印"用例跳过"。所以"手机竖拍视频自动转正"这条**没有被真正验证** |
+| ~~旋转自动转正~~ | **已补齐并修掉一个真 bug**。原来这条是"未验证"：合成素材的 `rotate=90` 在新版 ffmpeg 下不再被保留，用例静默走"跳过"分支（**假通过**）。现在用 `-display_rotation 90` 造出真正带显示矩阵的 `rot90.mp4`，验证中**发现旧实现手动 `transpose` 会导致转两次互相抵消**（产物 720×1280 而非 1280×720）。已改为交由 ffmpeg 自动转正，并有真实转码用例 + 防回归断言。详见 `docs/TEST_CASES.md` A9 |
 | HDR 色调映射 | 没有 HDR 样本，`zscale`/`tonemap` 滤镜链一次都没执行过 |
 | 硬件编码器**实际转码** | 探测层已确认真实可用性（QSV H.264 可用），但**没有任何一条真实转码用例走硬件编码器**——冒烟测试不覆盖 `capabilities.ts`，也没有用 QSV 真转过一个文件。NVENC / AMF 的真卡参数更无从验证 |
 | 缩略图的**避黑场**能力 | 智能选帧路径确实跑过（能出图、能命中缓存），但 `testsrc2` 彩条素材里没有黑场，所以 `blackdetect` + `signalstats` 的"避开黑帧"逻辑**只是执行了，没有被证明能正确跳过黑帧** |

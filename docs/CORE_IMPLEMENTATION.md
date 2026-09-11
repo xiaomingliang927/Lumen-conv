@@ -106,7 +106,7 @@ UI 只需要传 `qualityId: 'balanced'`，不需要知道这些差异。
 
 ### 3.3 自动纠偏（用户没要求，但不做就会出问题）
 
-- **旋转**：源带 `rotate=90` 元数据时追加 `transpose=1`。重新编码后元数据经常会丢，不转正的话手机上拍的视频转出来是横的
+- **旋转**：**什么都不做** —— 现代 ffmpeg 会自己应用显示矩阵并清除旋转标记。这里踩过一个坑：早期实现追加 `transpose=1`，结果是**转了两次正好抵消**，产物退回竖版且丢旋转标记，比不处理更糟（对照实验见 `docs/TEST_CASES.md` A9）。只保留"按显示高度参与只缩不放基准计算"和一句用户提示
 - **HDR → SDR**：源是 PQ/HLG 且目标不是 10bit 编码器时，插入 `zscale → tonemap=hable → zscale` 链。不做的话转出来画面明显发灰
 - **只缩不放**：目标分辨率高于源分辨率时不生成 `scale` 滤镜。放大只会变糊并浪费体积
 - **像素格式**：H.264/H.265 输出强制 `yuv420p`（或 10bit 源的 `yuv420p10le`），否则部分设备无法播放
@@ -266,7 +266,7 @@ export function effectiveOptions(file: LoadedFile): ConversionOptions {
 - 健壮性：错误翻译规则（磁盘满/显卡不可用/容器不兼容/取消）
 - 进度：百分比、速度、ETA、未知总时长的不确定进度
 
-当前共 **50 项通过 / 0 失败**（实测数据见 `docs/TEST_CASES.md` 的 A 部分）。
+当前共 **51 项通过 / 0 失败**（实测数据见 `docs/TEST_CASES.md` 的 A 部分）。
 
 `npm run smoke:ui` / `npm run smoke:ui:file` / `npm run smoke:ui:full` —— 界面自检，启动真实 Electron 窗口，
 用 `executeJavaScript` 检查关键元素，再用 `capturePage()` 截图到 `docs/screenshots/`，带退出码。三级递进：

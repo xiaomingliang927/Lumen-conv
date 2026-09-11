@@ -1,4 +1,4 @@
-/**
+﻿/**
  * 端到端冒烟测试（对应笔试要求 7：不能连自己都没测过）。
  *
  * 不启动 Electron 界面，而是直接调用与主进程完全相同的模块，
@@ -165,8 +165,7 @@ async function main() {
 
   const sampleMp4 = path.join(SAMPLES, 'sample-h264.mp4');
   const sampleHevc = path.join(SAMPLES, 'sample-hevc.mkv');
-  const sampleRotated = path.join(SAMPLES, 'sample-rotated.mp4');
-  const sampleAudio = path.join(SAMPLES, 'sample-audio.mp3');
+    const sampleAudio = path.join(SAMPLES, 'sample-audio.mp3');
 
   check('合成 H.264/MP4（6 秒）', () =>
     `${(statSync(makeSample(sampleMp4, { seconds: 6, size: '640x360', codec: 'h264' })).size / 1024).toFixed(0)} KB`,
@@ -181,14 +180,28 @@ async function main() {
       });
       return `${(statSync(f).size / 1024).toFixed(0)} KB`;
     });
-    check('合成带旋转元数据的 MP4（手机竖拍场景）', () => {
-      const f = makeSample(sampleRotated, {
-        seconds: 3,
-        size: '640x360',
-        codec: 'h264',
-        extra: ['-c:v', 'libx264', '-preset', 'ultrafast', '-metadata:s:v:0', 'rotate=90'],
-      });
-      return `${(statSync(f).size / 1024).toFixed(0)} KB`;
+    /*
+     * 旋转素材改用 scripts/generate-samples.mjs 产出的 rot90.mp4。
+     *
+     * 原来这里用 `-metadata:s:v:0 rotate=90` 合成，但**新版 ffmpeg 不再写这个 tag**，
+     * 生成的素材实际 rotation=0，导致后面的旋转用例静默走了"跳过"分支（假通过）。
+     * rot90.mp4 是用 `-display_rotation 90`（输入侧选项）生成的，确实带显示矩阵。
+     */
+    check('准备带旋转元数据的素材（rot90.mp4）', () => {
+      const rotSample = path.join(SAMPLES, 'rot90.mp4');
+      if (!existsSync(rotSample)) {
+        const gen = spawnSync(
+          process.execPath,
+          [path.join(root, 'scripts', 'generate-samples.mjs')],
+          { encoding: 'utf8', windowsHide: true },
+        );
+        if (gen.status !== 0 || !existsSync(rotSample)) {
+          throw new Error(
+            `缺少 rot90.mp4 且自动生成失败：${(gen.stderr || '').trim().split('\n').pop()?.slice(0, 100)}`,
+          );
+        }
+      }
+      return `${(statSync(rotSample).size / 1024).toFixed(0)} KB`;
     });
   }
   check('合成纯音频 MP3（5 秒）', () => {
@@ -458,21 +471,66 @@ async function main() {
     }
   });
 
-  /* ---- 旋转与裁剪 ---- */
-  if (!quick && existsSync(sampleRotated)) {
-    await checkAsync('旋转元数据处理', async () => {
-      const p = await mods.probe.probeMedia(sampleRotated, { ffprobePath: FFPROBE });
-      const v = p.video.find((x) => !x.isAttachedPic);
-      assert(v.rotation === 90 || v.rotation === 0, `旋转角异常：${v.rotation}`);
-      if (v.rotation === 90) {
-        const b = mods.commands.buildCommand(baseOptions, {
-          probe: p,
-          outputPath: path.join(OUTPUT, 'rot.mp4'),
-        });
-        assert(b.args.join(' ').includes('transpose'), '旋转视频应生成 transpose 滤镜');
-        return `rotation=${v.rotation}，已生成 transpose 滤镜`;
+  /* ---- 旋转处理 ---- */
+  /*
+   * 这里以前是个**假通过**的用例：它写"旋转视频应生成 transpose 滤镜"，
+   * 但前提是 `sample-rotated.mp4` 真的带 rotation=90 元数据 —— 实测它是 0
+   * （新版 ffmpeg 不再写 rotate tag），所以那句断言从来没被执行过，
+   * 用例每次都走 else 分支"跳过"并算通过。
+   *
+   * 现在改成分两层：
+   *   ① 用合成探测器数据验证命令装配规则（不依赖素材是否有旋转）
+   *   ② 如果磁盘上存在真正带旋转的素材（scripts/generate-samples.mjs 产出的 rot90.mp4），
+   *      就跑一次**真实转码**并回读产物尺寸，确认画面确实被转正
+   */
+  check('旋转素材：命令里不应出现 transpose（ffmpeg 会自动转正，重复转会转两次）', () => {
+    const rotatedProbe = {
+      ...probeResult,
+      video: [{ ...probeResult.video[0], rotation: 90, width: 720, height: 1280 }],
+    };
+    const b = mods.commands.buildCommand(baseOptions, {
+      probe: rotatedProbe,
+      outputPath: path.join(OUTPUT, 'rot-check.mp4'),
+    });
+    const text = b.args.join(' ');
+    assert(!text.includes('transpose'), `不应生成 transpose，实际命令含：${text.match(/-vf\s+\S+/)?.[0] ?? ''}`);
+    assert(
+      b.notes.some((n) => n.includes('旋转')),
+      '应对用户说明旋转已被自动处理',
+    );
+    return '无 transpose，且有用户提示';
+  });
+
+  if (!quick) {
+    await checkAsync('旋转素材：真实转码后画面确实被转正（1280×720）', async () => {
+      const rotSample = path.join(SAMPLES, 'rot90.mp4');
+      if (!existsSync(rotSample)) {
+        // 素材由 scripts/generate-samples.mjs 生成；缺失时明确说明而不是假装通过
+        throw new Error('缺少 rot90.mp4 素材，请先执行 node scripts/generate-samples.mjs');
       }
-      return `rotated 元数据未被 ffmpeg 保留（rotation=${v.rotation}），用例跳过`;
+      const p = await mods.probe.probeMedia(rotSample, { ffprobePath: FFPROBE });
+      const v = p.video[0];
+      assert(v.rotation === 90, `素材旋转角应为 90，实际 ${v.rotation}`);
+      assert(
+        v.displayWidth === 1280 && v.displayHeight === 720,
+        `展示尺寸应按旋转校正为 1280×720，实际 ${v.displayWidth}×${v.displayHeight}`,
+      );
+
+      const out = path.join(OUTPUT, 'smoke-rot90.mp4');
+      const b = mods.commands.buildCommand(
+        { ...baseOptions, audioCodecId: 'none' },
+        { probe: p, outputPath: out },
+      );
+      await runBuilt(b, out);
+
+      // 回读产物：宽高必须已被转正（说明 ffmpeg 的自动旋转生效了）
+      const p2 = await mods.probe.probeMedia(out, { ffprobePath: FFPROBE });
+      const v2 = p2.video[0];
+      assert(
+        v2.displayWidth === 1280 && v2.displayHeight === 720,
+        `产物应被转正为 1280×720，实际 ${v2.displayWidth}×${v2.displayHeight}`,
+      );
+      return `源 ${v.width}×${v.height}(rotation=${v.rotation}°) → 产物 ${v2.displayWidth}×${v2.displayHeight}`;
     });
   }
 

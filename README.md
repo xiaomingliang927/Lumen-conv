@@ -142,7 +142,7 @@ npm run smoke:ui:full
 | 3 | 取消时杀**进程树**并清理半成品 | 只 kill 父进程会残留 ffmpeg 子进程继续吃 CPU；取消后用户会看到一堆 0 字节 `.mp4` | `process.ts`（Windows 用 `taskkill /pid <pid> /T /F`）、`convert.ts` 的 `cleanupPartial()` |
 | 4 | 输出文件自动改名 / 磁盘空间预检 / 产物偏小告警 | 不覆盖用户已有文件；提前拦住"转完 3 小时发现磁盘满"；输出小于预估 5% 时提示播放确认 | `convert.ts` 的 `resolveOutputPath()`、`errors.ts` 的 `estimateOutputBytes()` |
 | 5 | ffmpeg 错误翻译成人话 + 给修复建议 | 用户不该看到 `Failed to configure output pad on Parsed_scale_1` | `errors.ts`（11 条规则，含"源编码装不进目标容器，请改用会重新编码的预设"），同时保留原始日志可展开、可复制 |
-| 6 | HDR 色调映射 + 旋转自动转正 | HDR 片源转 8bit 编码器会发灰；带旋转元数据的手机视频重编码后方向可能丢失 | `commands.ts`（`zscale`/`tonemap=hable` 链；`transpose`） |
+| 6 | HDR 色调映射；旋转**交由 ffmpeg 自动转正**（不手动 `transpose`） | HDR 片源转 8bit 编码器会发灰；而旋转若手动再转一次会**转两次互相抵消**，产物退回竖版且丢旋转标记 —— 这个坑已实测并修正，详见 `docs/TEST_CASES.md` 的 A9 | `commands.ts`（`zscale`/`tonemap=hable` 链；旋转只提示不处理） |
 | 7 | 目标分辨率高于源时**只缩不放** | 无意义放大只会变糊且浪费体积，UI 上会明确提示"已自动保持原分辨率" | `commands.ts` |
 | 8 | GIF 用**调色板两遍法** | ffmpeg 默认 GIF 转换只有 256 色且画质差，`palettegen` + `paletteuse` 明显更好 | `commands.ts` |
 | 9 | 直通（`-c copy`）前预检容器兼容性 | 源编码装不进目标容器时，ffmpeg 会在最后一步才失败，用户白等一场 | `commands.ts` 的 `isCodecAllowedInContainer()` |
@@ -383,7 +383,7 @@ npm run smoke:ui:file      # 上一项 + 加载真实视频后再截图（32 项
 npm run smoke:ui:full      # 再额外在应用内真的点一次「开始转换」并等任务跑完（44 项检查）
 ```
 
-**当前实测结果**：`npm run smoke` **50/50 通过**（0 失败，总耗时 18.4s），
+**当前实测结果**：`npm run smoke` **51/51 通过**（0 失败，总耗时 18.4s），
 `npm run smoke:ui:full` **44/44 通过、退出码 0**（三级命令的检查项是递进追加的：14 → 32 → 44），
 `npm run typecheck` 主进程 `tsc` 与渲染层 `vue-tsc` 均退出码 0、零错误。
 不需要任何外部素材——测试视频用 `lavfi` 的 `testsrc2` + 正弦音现场合成，
@@ -704,7 +704,7 @@ node scripts/fetch-binaries.mjs --force
 | **便携版 exe 用 Electron 默认图标、没有版本信息** | `package-portable.mjs` 会用 `electron-winstaller` 附带的 `rcedit.exe` 写图标与版本信息，但该版本 rcedit 在**路径含非 ASCII 字符**时（本项目路径含中文）报 `Fatal error: Unable to load file`，脚本如实跳过该步骤（实测 `Lumen-conv.exe` 的版本信息仍是 Electron 原值：`ProductName=Electron`、`OriginalFilename=electron.exe`）。**脚本刻意不做环境相关绕行**（例如把 exe 复制到临时 ASCII 路径再改回来），图标缺失不影响运行 |
 | **`test-assets/` 会被测试重新生成** | `test-assets/output/` 与 `test-assets/samples/` 已在 `.gitignore` 中排除，但**忽略 ≠ 清空**：这两个目录在磁盘上**仍然有文件**（`output/` 是最近一次 `npm run smoke` 的 9 个产物，`samples/` 是合成素材）。**已知现象**：界面自检的默认输出目录就是源文件同目录 + 自动改名策略，所以每跑一次 `npm run smoke:ui:full` 就会在 `test-assets/samples/` 里多出一个 `sample-h264 (n).mp4`；带序号的文件在多轮测试后被清理过，但**下次再跑仍会重新产生** |
 | **硬件编码器参数未在真卡上验证** | 本机只有 Intel 核显可用（**H.264 QSV 实测可用**），没有 NVIDIA / AMD 显卡：NVENC 与 AMF 在设置页显示"编码器初始化失败（通常是驱动问题）"。`-cq`（NVENC）/ `-b:v`（AMF）这些真卡参数**没有在任何硬件上跑过**，也没有任何一条真实转码用例走硬件编码器 |
-| **没有单元测试框架** | 没有 Vitest / Jest，纯函数（`renderer/utils/format.ts`、`progress.ts` 的解析、`sanitizeFileName()`）未做边界穷举。当前只有端到端冒烟（50 项）与界面自检（三级 14 / 32 / 44 项）两层 |
+| **没有单元测试框架** | 没有 Vitest / Jest，纯函数（`renderer/utils/format.ts`、`progress.ts` 的解析、`sanitizeFileName()`）未做边界穷举。当前只有端到端冒烟（51 项）与界面自检（三级 14 / 32 / 44 项）两层 |
 | 字幕只做软字幕 | 不支持烧录（hardsub）、不支持外挂字幕文件、不支持把 MKV 内封字幕抽成 `.srt`；WebM 容器下会自动剔除图形/ASS 字幕并提示改用 MKV |
 | **没有断点续传** | 转换中断（取消 / 崩溃 / 关机）只能整段重来 |
 | **GIF 只统计整段调色板** | `palettegen=stats_mode=diff` 针对整段视频统计颜色，超长视频做 GIF 很慢且体积大。UI 只在预设提示里建议"先裁剪 3-6 秒"，**没有硬性限制** |

@@ -177,17 +177,27 @@ function buildVideoArgs(
   /* ---- 缩放 / 帧率 / 旋转 ---- */
   const filters: string[] = [];
 
-  // 旋转：源带 rotation 元数据时，播放器会自动转；但重新编码后元数据可能丢失，
-  // 所以这里用 transpose 把像素真正转正，保证任何播放器方向都正确。
-  if (source.rotation === 90) {
-    filters.push('transpose=1');
-    notes.push('已按元数据把画面转正（源视频旋转 90°）');
-  } else if (source.rotation === 180) {
-    filters.push('transpose=2,transpose=2');
-    notes.push('已按元数据把画面转正（源视频旋转 180°）');
-  } else if (source.rotation === 270) {
-    filters.push('transpose=2');
-    notes.push('已按元数据把画面转正（源视频旋转 270°）');
+  /*
+   * 旋转：**不要手动 transpose**。
+   *
+   * 这是一个真实 bug 的修复（由 scripts/probe-real.mjs 用带显示矩阵的素材暴露）。
+   * 早期实现在源带旋转元数据时追加 `transpose=1`，注释里写的理由是"重新编码后
+   * 元数据可能丢失"。但实测（ffmpeg N-126435）结论相反：
+   *
+   *   源 720×1280 + rotation=90
+   *     · 不加 transpose        → 产物 1280×720  ✅（ffmpeg 已自动应用显示矩阵）
+   *     · 加 transpose=1（旧实现）→ 产物 720×1280  ❌（转了两次，正好抵消）
+   *
+   * 也就是说 ffmpeg 默认就会自动转正并清除旋转元数据，我们再加一次等于转两次，
+   * 产物退回竖版且不带旋转标记 —— 播放器里显示就是横躺的，比不处理更糟。
+   *
+   * srcHeight 仍然要按"显示高度"来算（旋转 90/270 时宽高互换），
+   * 否则"只缩不放"的判断会拿错基准。
+   */
+  if (source.rotation !== 0) {
+    notes.push(
+      `源视频带 ${source.rotation}° 旋转元数据，已交由 ffmpeg 自动转正（不会重复旋转）`,
+    );
   }
 
   const srcHeight = source.rotation === 90 || source.rotation === 270 ? source.width : source.height;

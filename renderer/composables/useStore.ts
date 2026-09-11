@@ -174,16 +174,24 @@ export const availableVideoCodecs = computed(() => {
 });
 
 /** 预期产物体积（用于转换前的提示） */
-export const predictedOutput = computed(() => {
-  const probe = activeProbe.value;
-  if (!probe) return null;
-  const preset = activePreset.value;
+/**
+ * 预估某个文件在给定参数下的产物大小。
+ *
+ * 从 `predictedOutput` 里抽出来是为了**批量场景复用**：
+ * 开始转换前要用它把 N 个文件的预计总产出加起来，跟目标磁盘的剩余空间对一下
+ * （见 D-023 的磁盘空间预检）。写成 computed 的话只有"当前选中文件"能算，
+ * 批量就没办法了。
+ */
+export function estimateOutputBytes(
+  probe: { sizeBytes: number; durationSec: number },
+  opts: ConversionOptions,
+): { bytes: number; approximate: boolean; note: string } {
+  const preset = CONVERSION_PRESETS.find((p) => p.id === opts.presetId) ?? CONVERSION_PRESETS[0];
   const container = CONTAINERS[preset.container];
-  const videoCodec = options.value.videoCodecId;
-  const quality = QUALITY_PRESETS.find((q) => q.id === options.value.qualityId) ?? QUALITY_PRESETS[2];
+  const quality = QUALITY_PRESETS.find((q) => q.id === opts.qualityId) ?? QUALITY_PRESETS[2];
 
   // 直通：产物大小≈源大小
-  if (videoCodec === 'copy' || container.id === 'copy') {
+  if (opts.videoCodecId === 'copy' || container.id === 'copy') {
     return { bytes: probe.sizeBytes, approximate: true, note: '不重新编码，体积与源文件接近' };
   }
 
@@ -191,11 +199,11 @@ export const predictedOutput = computed(() => {
    * 目标体积模式：预估直接就是目标值。
    * 这也是这个功能的意义 —— 用户不用再"猜一档质量、转完看结果、不行再转一遍"。
    */
-  if (options.value.sizeLimitMb && options.value.sizeLimitMb > 0 && container.videoCodecs.length > 0) {
-    const targetBytes = Math.round(options.value.sizeLimitMb * 1024 * 1024);
+  if (opts.sizeLimitMb && opts.sizeLimitMb > 0 && container.videoCodecs.length > 0) {
+    const targetBytes = Math.round(opts.sizeLimitMb * 1024 * 1024);
     const duration = Math.max(0.1, probe.durationSec);
     const totalKbps = (targetBytes * 8) / duration / 1000;
-    const audioKbps = options.value.audioCodecId === 'none' ? 0 : quality.audioBitrateKbps;
+    const audioKbps = opts.audioCodecId === 'none' ? 0 : quality.audioBitrateKbps;
     return {
       bytes: targetBytes,
       approximate: false,
@@ -221,14 +229,24 @@ export const predictedOutput = computed(() => {
     '480p': 0.3,
     '360p': 0.18,
   };
-  const factor = scale[options.value.resolutionId] ?? 1;
+  const factor = scale[opts.resolutionId] ?? 1;
   const bitrate = quality.bitrateKbps * factor + quality.audioBitrateKbps;
-  const bytes = predictOutputBytes(bitrate, probe.durationSec);
+  // predictOutputBytes 在码率/时长为 0 时返回 null（表示"算不出来"）。
+  // 这里把它折成 0 并标注为近似值：调用方（磁盘预检）会跳过 0，不会拿它当真。
+  const bytes = predictOutputBytes(bitrate, probe.durationSec) ?? 0;
   return {
     bytes,
     approximate: true,
     note: `按 ${quality.label} 质量与目标分辨率估算`,
   };
+}
+
+export const predictedOutput = computed(() => {
+  const probe = activeProbe.value;
+  if (!probe) return null;
+  // 用当前文件真正生效的参数（全局 + 本文件覆盖），而不是只看全局
+  const opts = activeFile.value ? effectiveOptions(activeFile.value) : options.value;
+  return estimateOutputBytes(probe, opts);
 });
 
 /* ------------------------------ 动作 ------------------------------ */
@@ -358,6 +376,43 @@ export async function startConversion(paths?: string[]): Promise<number> {
     options: effectiveOptions(f),
   }));
 
+  /*
+   * 磁盘空间预检（2026-09 新增，见 DECISIONS.md D-023）。
+   *
+   * 为什么要做：批量转 4K 素材很容易写出几十 GB，盘满时 ffmpeg 会在**转了很久之后**
+   * 才报 "No space left on device"，用户白等一场。这里在开转前把"预计总产出"和
+   * 目标盘的剩余空间对一下 —— 估算本来就是近似的，所以留 10% 余量并且只说"可能不够"，
+   * 由用户决定是否继续（不硬拦）。
+   */
+  try {
+    const outputDir =
+      targets[0]?.overrides?.outputDir ??
+      targets[0]?.probe?.path?.replace(/[\\/][^\\/]*$/, '') ??
+      options.value.outputDir ??
+      null;
+    if (outputDir) {
+      const free = await api.freeSpace(outputDir);
+      if (free.ok && free.data > 0) {
+        const estimated = targets.reduce((sum, f) => {
+          if (!f.probe) return sum;
+          const e = estimateOutputBytes(f.probe, effectiveOptions(f));
+          return sum + e.bytes;
+        }, 0);
+        if (estimated > 0 && estimated * 1.1 > free.data) {
+          const need = (estimated / 1024 ** 3).toFixed(1);
+          const have = (free.data / 1024 ** 3).toFixed(1);
+          showToast(
+            `目标磁盘剩余 ${have} GB，预计要写出约 ${need} GB（估算值）—— 可能不够，建议先清理磁盘或改输出目录`,
+            'danger',
+            8000,
+          );
+        }
+      }
+    }
+  } catch {
+    /* 预检失败不影响转换本身，静默跳过 */
+  }
+
   let res;
   try {
     res = await api.createJobs(requests);
@@ -421,6 +476,69 @@ export async function clearFinished(): Promise<void> {
     showToast(`已清除 ${res.data} 条记录`, 'info', 2000);
   }
 }
+
+/* ---------------- 队列级控制（暂停 / 继续 / 重排） ---------------- */
+
+/** 队列是否处于暂停（暂停 = 不再启动新任务，正在跑的继续跑完） */
+export const queuePaused = ref(false);
+
+export async function pauseQueue(): Promise<void> {
+  const res = await api.pauseQueue();
+  if (!res.ok) {
+    showToast(`暂停失败：${res.error}`, 'danger');
+    return;
+  }
+  queuePaused.value = res.data;
+  showToast('队列已暂停：正在转换的任务会跑完，后面的先不开始', 'info', 3200);
+}
+
+export async function resumeQueue(): Promise<void> {
+  const res = await api.resumeQueue();
+  if (!res.ok) {
+    showToast(`继续失败：${res.error}`, 'danger');
+    return;
+  }
+  queuePaused.value = res.data;
+  showToast('队列已继续', 'info', 2000);
+}
+
+export async function moveJob(id: string, direction: 'up' | 'down' | 'top'): Promise<void> {
+  const res = await api.moveJob(id, direction);
+  if (!res.ok) {
+    showToast(`调整顺序失败：${res.error}`, 'danger');
+    return;
+  }
+  await refreshJobs();
+}
+
+/** 排队中的任务（按引擎给出的顺序），界面用它渲染"第 N 位"与重排按钮 */
+export const queuedJobs = computed(() => jobs.value.filter((j) => j.state === 'queued'));
+
+/**
+ * 队列总剩余时间（秒）。
+ *
+ * 只累加**已知 ETA** 的任务：正在跑的用它的 etaSec，排队中的用"自己的预计时长"
+ * （由预估体积/码率推不出来，所以排队中的暂时按"已运行任务的平均速度"估——
+ *  估不出来就返回 null，界面显示"—"，**不编一个数字**）。
+ */
+export const queueEtaSec = computed<number | null>(() => {
+  const list = jobs.value;
+  const running = list.filter((j) => j.state === 'running');
+  const queued = list.filter((j) => j.state === 'queued');
+  if (running.length === 0 && queued.length === 0) return null;
+
+  let total = running.reduce((sum, j) => sum + (j.progress?.etaSec ?? 0), 0);
+  // 排队中的任务：用"每个已完成任务的平均耗时"粗估，没有历史就不猜
+  const finished = list.filter((j) => j.state === 'done' && j.startedAt && j.finishedAt);
+  if (queued.length > 0) {
+    if (finished.length === 0) return null;
+    const avgSec =
+      finished.reduce((sum, j) => sum + ((j.finishedAt ?? 0) - (j.startedAt ?? 0)) / 1000, 0) /
+      finished.length;
+    total += avgSec * queued.length;
+  }
+  return total > 0 ? Math.round(total) : null;
+});
 
 export async function openJobOutput(id: string): Promise<void> {
   const ok = await api.openOutput(id);

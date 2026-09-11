@@ -11,6 +11,7 @@
  */
 import { app, BrowserWindow, dialog, ipcMain, Menu, net, protocol, shell } from 'electron';
 import { existsSync } from 'node:fs';
+import { promises as fsp } from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import type {
@@ -2262,6 +2263,101 @@ async function runSmokeCheck(): Promise<void> {
           queueReport.state.includes('已完成') && /\d/.test(queueReport.outSize) && queueReport.hasOpenBtn,
           `状态「${queueReport.state}」，产物 ${queueReport.outSize}，${queueReport.hasOpenBtn ? '有打开按钮' : '无打开按钮'}`,
         ]);
+
+        /*
+         * 队列级控制（暂停 / 继续 / 重排 / 并发）—— 2026-09 新增，见 DECISIONS.md D-023。
+         *
+         * 真实的用户路径：先「暂停队列」，再点「开始转换」—— 任务会停在排队中而不启动；
+         * 此时排队卡片上应出现置顶/上移/下移，队列页头部应出现「继续队列」。
+         * 这条链路走完，才说明这些按钮不是摆设。
+         */
+        const queueCtl = await evalJs<{
+          pauseBtnExists: boolean;
+          pausedLabel: string;
+          queuedAfterPause: number;
+          moveButtons: number;
+          concurrencyOptions: number;
+          resumeWorked: boolean;
+          error: string;
+        }>(
+          '验证队列暂停 / 重排 / 并发控件',
+          `(async () => {
+            const tick = (ms) => new Promise((r) => setTimeout(r, ms));
+            const blank = { pauseBtnExists: false, pausedLabel: '', queuedAfterPause: 0, moveButtons: 0, concurrencyOptions: 0, resumeWorked: false, error: '' };
+            try {
+              const nav = (i) => document.querySelectorAll('.nav-item')[i]?.click();
+
+              // 1) 队列页：点「暂停队列」
+              nav(1);
+              await tick(400);
+              const pauseBtn = [...document.querySelectorAll('.queue-head button')].find((b) =>
+                (b.textContent ?? '').includes('暂停队列'),
+              );
+              if (!pauseBtn) return { ...blank, error: '队列页没有「暂停队列」按钮' };
+              pauseBtn.click();
+              await tick(400);
+              const pausedLabel = (document.querySelector('.queue-head .chip-warn')?.textContent ?? '').trim();
+              const concurrencyOptions = document.querySelectorAll('.queue-head .concurrency option').length;
+
+              // 2) 回转换页点「开始转换」：任务应停在排队中
+              nav(0);
+              await tick(300);
+              const startBtn = [...document.querySelectorAll('.pane-actions .btn, .btn-primary')].find((b) =>
+                (b.textContent ?? '').includes('开始转换'),
+              );
+              if (startBtn) startBtn.click();
+              await tick(1400);
+
+              // 3) 回队列页看：排队卡片 + 重排按钮
+              nav(1);
+              await tick(600);
+              const queuedCards = [...document.querySelectorAll('.job-card.queued')];
+              const moveButtons = queuedCards.reduce(
+                (n, c) => n + c.querySelectorAll('.move-btn').length,
+                0,
+              );
+
+              // 4) 继续队列
+              const resumeBtn = [...document.querySelectorAll('.queue-head button')].find((b) =>
+                (b.textContent ?? '').includes('继续队列'),
+              );
+              if (resumeBtn) resumeBtn.click();
+              await tick(1800);
+              const resumeWorked = !document.querySelector('.queue-head .chip-warn');
+
+              return {
+                pauseBtnExists: true,
+                pausedLabel,
+                queuedAfterPause: queuedCards.length,
+                moveButtons,
+                concurrencyOptions,
+                resumeWorked,
+                error: '',
+              };
+            } catch (e) {
+              return { ...blank, error: String(e) };
+            }
+          })()`,
+        );
+        extraChecks.push(
+          [
+            '队列控制：提供「暂停队列 / 继续队列」且暂停后任务真的停在排队中',
+            queueCtl.pauseBtnExists && queueCtl.pausedLabel.includes('已暂停') && queueCtl.queuedAfterPause >= 1,
+            queueCtl.error
+              ? `执行出错：${queueCtl.error}`
+              : `暂停标记「${queueCtl.pausedLabel}」，暂停期间排队任务 ${queueCtl.queuedAfterPause} 个`,
+          ],
+          [
+            '队列控制：排队中的任务带重排按钮（置顶 / 上移 / 下移）',
+            queueCtl.moveButtons >= 3,
+            `排队卡片上的重排按钮共 ${queueCtl.moveButtons} 个`,
+          ],
+          [
+            '队列控制：队列页可直接调并发数，且「继续」能恢复调度',
+            queueCtl.concurrencyOptions >= 4 && queueCtl.resumeWorked,
+            `并发可选 ${queueCtl.concurrencyOptions} 档；继续后暂停标记${queueCtl.resumeWorked ? '已消失' : '仍在'}`,
+          ],
+        );
       } else {
         extraChecks.push(['应用内转换：任务完成', false, '等待超时，未进入终态']);
       }
@@ -2546,6 +2642,25 @@ function registerIpc(): void {
   handle<MediaJob | null>('jobs:retry', (id: string) => engine.retry(id));
   handle<boolean>('jobs:remove', (id: string) => engine.remove(id));
   handle<number>('jobs:clear-finished', () => engine.clearFinished());
+  handle<boolean>('jobs:pause-queue', () => engine.pauseQueue());
+  handle<boolean>('jobs:resume-queue', () => engine.resumeQueue());
+  handle<boolean>('jobs:move', (id: string, direction: 'up' | 'down' | 'top') =>
+    engine.moveJob(id, direction),
+  );
+
+  /*
+   * 磁盘剩余空间（开转前的预检用）。
+   * `fsp.statfs` 需要 Node 18.15+ / Electron 相应版本，本机满足；
+   * 拿不到时返回 0，调用方按"不知道"处理（不拦用户）。
+   */
+  handle<number>('system:free-space', async (target: string) => {
+    try {
+      const stats = await fsp.statfs(target);
+      return Number(stats.bavail) * Number(stats.bsize);
+    } catch {
+      return 0;
+    }
+  });
   handle<boolean>('jobs:open-output', async (id: string) => {
     const job = engine.get(id);
     if (!job || !existsSync(job.outputPath)) return false;

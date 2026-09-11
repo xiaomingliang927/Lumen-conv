@@ -16,16 +16,36 @@ import {
   finishedJobs,
   jobLogs,
   jobs,
+  moveJob,
   openJobOutput,
+  pauseQueue,
+  queueEtaSec,
+  queuePaused,
+  queuedJobs,
   removeJob,
+  resumeQueue,
   retryJob,
   runningJobs,
+  settings,
+  showToast,
+  updateSettings,
 } from '@/composables/useStore';
 import { formatBytes, formatDuration, formatEta, formatRatio, formatSpeed, stateLabel } from '@/utils/format';
 import type { MediaJob } from '@shared/types';
 
 const openLog = reactive<Record<string, boolean>>({});
 const openCommand = reactive<Record<string, boolean>>({});
+
+/** 排队中任务的位置（用于判断"置顶/上移"能不能点） */
+const queuedIndex = (id: string): number => queuedJobs.value.findIndex((j) => j.id === id);
+
+/** 并发数：直接读设置，改了立刻生效（引擎的 setConcurrency 会重新调度） */
+const concurrency = computed(() => settings.value?.concurrency ?? 2);
+async function changeConcurrency(e: Event): Promise<void> {
+  const n = Number((e.target as HTMLSelectElement).value);
+  await updateSettings({ concurrency: n });
+  showToast(`并发已设为 ${n}`, 'info', 1800);
+}
 
 /** 本地 1 秒心跳：让「已用时 / 剩余时间」持续走动，而不必等 ffmpeg 上报 */
 const tick = ref(0);
@@ -96,8 +116,34 @@ void formatDuration;
         <h2>任务队列</h2>
         <span v-if="runningJobs.length" class="chip chip-accent">{{ runningJobs.length }} 个进行中</span>
         <span v-if="finishedJobs.length" class="chip">{{ finishedJobs.length }} 个已结束</span>
+        <span v-if="queuePaused" class="chip chip-warn">已暂停</span>
+        <span v-if="queueEtaSec !== null" class="chip" title="按已完成任务的平均耗时 + 运行中任务的实时剩余时间估算">
+          总剩余约 {{ formatEta(queueEtaSec) }}
+        </span>
       </div>
       <div class="head-right">
+        <!--
+          队列级控制（2026-09 新增，见 DECISIONS.md D-023）。
+          暂停的语义是"不再启动新任务"，正在跑的那个会跑完 —— 因为 ffmpeg 不支持断点续传，
+          硬停一个跑一半的任务只能从头再来，那叫取消。
+        -->
+        <button
+          v-if="!queuePaused"
+          class="btn btn-sm btn-ghost"
+          title="不再启动新任务；正在转换的那个会跑完"
+          @click="pauseQueue"
+        >
+          暂停队列
+        </button>
+        <button v-else class="btn btn-sm" @click="resumeQueue">继续队列</button>
+
+        <label class="concurrency" title="同时转换几个文件">
+          <span class="muted">并发</span>
+          <select class="select select-sm" :value="concurrency" @change="changeConcurrency">
+            <option v-for="n in 4" :key="n" :value="n">{{ n }}</option>
+          </select>
+        </label>
+
         <button class="btn btn-sm btn-ghost" :disabled="!hasAnyFinished" @click="clearFinished">
           清除已完成
         </button>
@@ -198,6 +244,39 @@ void formatDuration;
             >
               打开位置
             </button>
+
+            <!--
+              重排只对**排队中**的任务开放。
+              正在跑的改顺序没有意义；已结束的更没有 —— 与其给出点了没反应的按钮，
+              不如不显示（这是本项目一贯的取舍：按钮必须真的有用）。
+            -->
+            <template v-if="job.state === 'queued'">
+              <button
+                class="btn btn-sm btn-ghost move-btn"
+                title="提到最前（下一个就转它）"
+                :disabled="queuedIndex(job.id) === 0"
+                @click="moveJob(job.id, 'top')"
+              >
+                ⇤ 置顶
+              </button>
+              <button
+                class="btn btn-sm btn-ghost move-btn"
+                title="上移一位"
+                :disabled="queuedIndex(job.id) === 0"
+                @click="moveJob(job.id, 'up')"
+              >
+                ↑
+              </button>
+              <button
+                class="btn btn-sm btn-ghost move-btn"
+                title="下移一位"
+                :disabled="queuedIndex(job.id) === queuedJobs.length - 1"
+                @click="moveJob(job.id, 'down')"
+              >
+                ↓
+              </button>
+            </template>
+
             <button
               v-if="job.state !== 'running'"
               class="btn btn-sm btn-ghost"
@@ -247,8 +326,30 @@ void formatDuration;
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
   padding: 14px 18px;
   border-bottom: 1px solid var(--border-subtle);
+}
+.head-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.concurrency {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+.select-sm {
+  width: auto;
+  min-width: 54px;
+  padding: 3px 6px;
+  font-size: 12px;
+}
+.move-btn {
+  padding: 2px 7px;
 }
 .head-left {
   display: flex;

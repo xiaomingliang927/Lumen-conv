@@ -57,6 +57,7 @@ const api: ConverterApi = {
   getCapabilities: (forceRefresh) =>
     call<SystemCapabilities>('capabilities:get', Boolean(forceRefresh)),
   detectFfmpeg: () => call<FfmpegDetectResult>('ffmpeg:detect'),
+  freeSpace: (p: string) => call<number>('system:free-space', p),
 
   getSettings: () => call<AppSettings>('settings:get'),
   saveSettings: (patch) => call<AppSettings>('settings:save', patch),
@@ -69,6 +70,9 @@ const api: ConverterApi = {
   retryJob: (id) => call<MediaJob | null>('jobs:retry', id),
   removeJob: (id) => call<boolean>('jobs:remove', id),
   clearFinished: () => call<number>('jobs:clear-finished'),
+  pauseQueue: () => call<boolean>('jobs:pause-queue'),
+  resumeQueue: () => call<boolean>('jobs:resume-queue'),
+  moveJob: (id: string, direction: 'up' | 'down' | 'top') => call<boolean>('jobs:move', id, direction),
   openOutput: (id) => call<boolean>('jobs:open-output', id),
 
   getPresets: () => call<unknown>('presets:get'),

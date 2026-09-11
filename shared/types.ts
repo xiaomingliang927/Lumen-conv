@@ -434,6 +434,8 @@ export interface ConverterApi {
   pathsForFiles(files: File[]): string[];
   thumbnail(path: string, atSec?: number): Promise<IpcResponse<ThumbnailResult>>;
   getCapabilities(forceRefresh?: boolean): Promise<IpcResponse<SystemCapabilities>>;
+  /** 指定目录所在磁盘的剩余字节数（开转前的磁盘空间预检用） */
+  freeSpace(path: string): Promise<IpcResponse<number>>;
   detectFfmpeg(): Promise<IpcResponse<FfmpegDetectResult>>;
 
   /* 设置 */
@@ -449,6 +451,16 @@ export interface ConverterApi {
   retryJob(jobId: string): Promise<IpcResponse<MediaJob | null>>;
   removeJob(jobId: string): Promise<IpcResponse<boolean>>;
   clearFinished(): Promise<IpcResponse<number>>;
+  /**
+   * 队列级暂停/继续：暂停后**不再启动新任务**，正在跑的继续跑完。
+   *
+   * 语义见 `electron/ffmpeg/convert.ts` 的 pauseQueue 注释：
+   * ffmpeg 不支持断点续传，硬停一个跑一半的任务只能从头再来 —— 那叫"取消"。
+   */
+  pauseQueue(): Promise<IpcResponse<boolean>>;
+  resumeQueue(): Promise<IpcResponse<boolean>>;
+  /** 调整排队中任务的位置；运行中的任务不受影响 */
+  moveJob(jobId: string, direction: 'up' | 'down' | 'top'): Promise<IpcResponse<boolean>>;
   openOutput(jobId: string): Promise<IpcResponse<boolean>>;
 
   /* 预设目录（静态，随应用分发） */

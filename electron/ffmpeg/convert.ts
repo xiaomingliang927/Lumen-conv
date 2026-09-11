@@ -186,7 +186,69 @@ export class ConversionEngine extends EventEmitter {
 
   /* ----------------------------- 调度 ----------------------------- */
 
+  /*
+   * 队列级暂停（2026-09 新增，见 DECISIONS.md D-023）。
+   *
+   * 语义刻意定成"**不再启动新任务**，已经在跑的那个继续跑完"：
+   *   · ffmpeg 不支持断点续传，硬停一个跑到一半的任务只能从头再来 ——
+   *     那叫"取消"，不叫"暂停"，用户会白等前面的时间；
+   *   · 真正想立刻腾出 CPU 的用户，可以再对那个任务点「取消」，
+   *     两个动作分开、各自名副其实。
+   * 暂停状态会持久化在引擎里，恢复时自动 pump。
+   */
+  private paused = false;
+
+  pauseQueue(): boolean {
+    this.paused = true;
+    return this.paused;
+  }
+
+  resumeQueue(): boolean {
+    this.paused = false;
+    this.pump();
+    return this.paused;
+  }
+
+  isPaused(): boolean {
+    return this.paused;
+  }
+
+  /**
+   * 调整排队中任务的位置（重排）。
+   *
+   * 只动 `queue` 数组，不碰正在运行的任务 —— 正在跑的任务改顺序没有意义，
+   * 而"把某个任务提到最前"在批量转换里非常常用（先转我要的那条）。
+   * @param direction 'up' | 'down' | 'top'
+   */
+  moveJob(jobId: string, direction: 'up' | 'down' | 'top'): boolean {
+    const at = this.queue.indexOf(jobId);
+    if (at < 0) return false;
+    const next = [...this.queue];
+    next.splice(at, 1);
+    if (direction === 'top') {
+      next.unshift(jobId);
+    } else if (direction === 'up') {
+      next.splice(Math.max(0, at - 1), 0, jobId);
+    } else {
+      next.splice(Math.min(next.length, at + 1), 0, jobId);
+    }
+    this.queue = next;
+    // 队列顺序变了要通知界面（否则按钮点了没反应）
+    for (const id of this.queue) {
+      const internal = this.jobs.get(id);
+      if (internal) this.emitUpdate(internal);
+    }
+    return true;
+  }
+
+  /** 排队中的任务 id（按当前顺序）；界面用它渲染"第几位"与重排按钮的可用性 */
+  queuedIds(): string[] {
+    return [...this.queue];
+  }
+
   private pump(): void {
+    // 暂停时不启动新任务；恢复时 resumeQueue() 会再调一次 pump
+    if (this.paused) return;
     while (this.runningCount() < this.concurrency && this.queue.length > 0) {
       const id = this.queue.shift();
       if (!id) break;

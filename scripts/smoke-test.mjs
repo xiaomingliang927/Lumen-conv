@@ -1298,6 +1298,89 @@ async function main() {
     });
   }
 
+  /* ---- 队列级控制：暂停 / 继续 / 重排（2026-09 新增，见 D-023） ---- */
+  group('队列控制 · 暂停 / 继续 / 重排');
+
+  await checkAsync('队列暂停后不再启动新任务，继续后恢复调度', async () => {
+    const engine = new mods.engine.ConversionEngine();
+    engine.setFfmpegPath(FFMPEG);
+    engine.setFfprobePath(FFPROBE);
+    engine.setConcurrency(1);
+
+    engine.pauseQueue();
+    assert(engine.isPaused() === true, 'pauseQueue 后应处于暂停态');
+
+    const created = await engine.createJobs(
+      [1, 2, 3].map((i) => ({
+        sourcePath: sampleMp4,
+        options: { ...baseOptions, fileNameTemplate: `pause-${i}` },
+      })),
+    );
+    assert(created.length === 3, '应创建 3 个任务');
+
+    // 暂停期间：一个都不该开始跑
+    await new Promise((r) => setTimeout(r, 900));
+    const duringPause = engine.list();
+    const runningDuringPause = duringPause.filter((j) => j.state === 'running').length;
+    assert(runningDuringPause === 0, `暂停期间不应有任务在跑，实际 ${runningDuringPause}`);
+    assert(
+      duringPause.filter((j) => j.state === 'queued').length === 3,
+      '暂停期间 3 个任务都应停在排队中',
+    );
+
+    // 继续：应当真的开始跑
+    engine.resumeQueue();
+    assert(engine.isPaused() === false, 'resumeQueue 后应退出暂停态');
+    await new Promise((r) => setTimeout(r, 1200));
+    const afterResume = engine.list();
+    const started = afterResume.filter((j) => j.state === 'running' || j.state === 'done').length;
+    assert(started >= 1, `继续后应有任务开始，实际 ${started}`);
+
+    for (const j of engine.list()) engine.cancel(j.id);
+    return `暂停期间 0 个在跑；继续后 ${started} 个已启动`;
+  });
+
+  await checkAsync('重排：置顶 / 上移 / 下移 只动排队中的任务', async () => {
+    const engine = new mods.engine.ConversionEngine();
+    engine.setFfmpegPath(FFMPEG);
+    engine.setFfprobePath(FFPROBE);
+    engine.setConcurrency(1);
+    engine.pauseQueue(); // 先全停在队列里，方便观察顺序
+
+    const created = await engine.createJobs(
+      ['a', 'b', 'c'].map((n) => ({
+        sourcePath: sampleMp4,
+        options: { ...baseOptions, fileNameTemplate: `order-${n}` },
+      })),
+    );
+    const ids = created.map((c) => c.job?.id ?? '');
+    assert(ids.every(Boolean), '任务应全部创建成功');
+    await new Promise((r) => setTimeout(r, 400));
+
+    assert(
+      JSON.stringify(engine.queuedIds()) === JSON.stringify(ids),
+      `初始顺序应与入队一致：${engine.queuedIds().join(',')}`,
+    );
+
+    // 把最后一个置顶
+    assert(engine.moveJob(ids[2], 'top') === true, 'moveJob(top) 应成功');
+    assert(engine.queuedIds()[0] === ids[2], `置顶失败：${engine.queuedIds().join(',')}`);
+
+    // 下移一位
+    assert(engine.moveJob(ids[2], 'down') === true, 'moveJob(down) 应成功');
+    assert(engine.queuedIds()[1] === ids[2], `下移失败：${engine.queuedIds().join(',')}`);
+
+    // 上移一位还原
+    assert(engine.moveJob(ids[2], 'up') === true, 'moveJob(up) 应成功');
+    assert(engine.queuedIds()[0] === ids[2], `上移失败：${engine.queuedIds().join(',')}`);
+
+    // 不存在的任务应返回 false，而不是抛错或静默改坏队列
+    assert(engine.moveJob('not-a-real-id', 'top') === false, '不存在的 id 应返回 false');
+
+    for (const j of engine.list()) engine.cancel(j.id);
+    return `顺序可控：${engine.queuedIds().length} 个排队任务，置顶/上移/下移均生效`;
+  });
+
   /* ---- 错误诊断 ---- */
   group('健壮性 · 错误诊断');
   check('源编码装不进 MP4 时给出人话提示', () => {

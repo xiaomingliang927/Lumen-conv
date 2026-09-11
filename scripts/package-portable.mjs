@@ -33,6 +33,7 @@ import {
   statSync,
   writeFileSync,
 } from 'node:fs';
+import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 
@@ -104,22 +105,39 @@ cpSync(electronDist, staging, {
 const exePath = path.join(staging, 'electron.exe');
 if (!existsSync(exePath)) fail('运行时里没有 electron.exe');
 
-/* ---- 写图标与版本信息（纯离线，用 electron-winstaller 附带的 rcedit） ----
- * 已知限制：该 rcedit 版本在资源管理器路径含非 ASCII 字符（本项目路径里有中文）
- * 时会报 "Fatal error: Unable to load file"（实测即如此，版本信息保持 Electron 原值）。
- * 这里不去做各种环境相关的绕行（例如把 exe 复制到临时 ASCII 路径再改回来）——
- * 那会让构建脚本依赖具体环境，反而更难维护。图标缺失不影响功能。
- * 需要带图标的正式安装包时，请在有网络的环境执行 `npm run dist:nsis`，
- * electron-builder 会正确处理图标。 */
+/* ---- 写图标与版本信息（可选，失败不影响功能） ----
+ *
+ * 尝试过两条路，都不通，记录在此避免后来者重复踩：
+ *   1) 直接对 exe 调 rcedit → `Fatal error: Unable to load file`
+ *   2) 怀疑是项目路径含中文，于是把 exe 复制到纯 ASCII 临时目录再调 → 同样失败
+ *   3) 进一步对照：对 node_modules 里的 electron.exe、对 rcedit 自己的副本、
+ *      对系统 C:\Windows\System32\notepad.exe 调用 → **全部**报同一个错
+ * 结论：electron-winstaller 附带的 rcedit 0.2.0（2019 年）在本环境下不可用，
+ * 与路径无关，也不是 exe 大小问题。要嵌图标得换更新的 rcedit 或改用
+ * electron-builder 的完整工具链（需要网络下载）。
+ *
+ * 影响与补偿：便携版的 exe 用的是 Electron 默认图标，但**桌面快捷方式会显示我们的图标**
+ * —— .lnk 的 IconLocation 可以独立指定图标文件，与目标 exe 内嵌图标无关。
+ * 所以用户从桌面看到的仍然是正确图标，只有直接去看 exe 文件本身才是默认图标。
+ */
 const rcedit = path.join(root, 'node_modules', 'electron-winstaller', 'vendor', 'rcedit.exe');
 const icon = path.join(root, 'build', 'icon.ico');
+const renamedExe = path.join(staging, `${APP_NAME}.exe`);
+
 if (existsSync(rcedit) && existsSync(icon)) {
-  log('尝试写入图标与版本信息 …');
+  const asciiDir = path.join(os.tmpdir(), 'lumen-rcedit');
+  rmSync(asciiDir, { recursive: true, force: true });
+  mkdirSync(asciiDir, { recursive: true });
+  const asciiExe = path.join(asciiDir, 'app.exe');
+  const asciiIcon = path.join(asciiDir, 'icon.ico');
+  cpSync(exePath, asciiExe);
+  cpSync(icon, asciiIcon);
+
   const res = spawnSync(
     rcedit,
     [
-      exePath,
-      '--set-icon', icon,
+      asciiExe,
+      '--set-icon', asciiIcon,
       '--set-file-version', pkg.version,
       '--set-product-version', pkg.version,
       '--set-version-string', 'ProductName', `${APP_NAME} 视频格式转换器`,
@@ -130,20 +148,20 @@ if (existsSync(rcedit) && existsSync(icon)) {
     ],
     { stdio: 'pipe', windowsHide: true },
   );
-  if (res.status !== 0) {
-    log(
-      `⚠ 跳过图标写入（不影响运行）：${
-        (res.stderr || '').toString().trim().split('\n')[0] || `exit=${res.status}`
-      }`,
-    );
-  } else {
-    log('图标与版本信息已写入');
-  }
-} else {
-  log('⚠ 缺少 rcedit.exe 或 build/icon.ico，跳过图标写入');
-}
 
-renameSync(exePath, path.join(staging, `${APP_NAME}.exe`));
+  if (res.status === 0) {
+    cpSync(asciiExe, renamedExe, { force: true });
+    rmSync(exePath, { force: true });
+    log('✔ 图标与版本信息已写入 exe');
+  } else {
+    renameSync(exePath, renamedExe);
+    log('ℹ 跳过 exe 内嵌图标（该 rcedit 版本在本环境不可用，详见脚本注释）');
+  }
+  rmSync(asciiDir, { recursive: true, force: true });
+} else {
+  renameSync(exePath, renamedExe);
+  log('ℹ 未找到 rcedit 或 build/icon.ico，跳过 exe 内嵌图标');
+}
 
 /* ---- ffmpeg / ffprobe：放在 resources/bin，与开发态的查找路径一致 ---- */
 const resDir = path.join(staging, 'resources');
@@ -211,8 +229,62 @@ const walk = (dir) => {
 };
 walk(outDir);
 
+/* ------------------------------ 桌面快捷方式 ------------------------------ */
+
+/**
+ * 在桌面创建快捷方式（`--shortcut` 时启用）。
+ *
+ * 用 PowerShell 的 WScript.Shell COM 创建 .lnk —— Windows 上不需要任何额外依赖。
+ * 之所以做成可选：有人的机器上桌面路径被重定向/受管控，写桌面可能失败；
+ * 失败只提示、不让打包整体失败。
+ */
+function createDesktopShortcut() {
+  const desktop = path.join(os.homedir(), 'Desktop');
+  const lnk = path.join(desktop, `${APP_NAME} 视频格式转换器.lnk`);
+  // 用我们自己的 ico 作为快捷方式图标：即使 exe 内嵌图标换不掉（rcedit 不可用），
+  // 桌面上显示给用户的仍然是正确图标。
+  const iconForShortcut = existsSync(icon) ? icon : `${exeFinal},0`;
+
+  // 注意：路径要按 PowerShell 单引号字面量转义（' → ''），不能用 JSON.stringify ——
+  // 它会把反斜杠写成 \\，Windows 虽能容忍，但存进 .lnk 的 WorkingDirectory/IconLocation
+  // 会是双反斜杠，后续用别的工具读取时容易出问题。
+  const psQuote = (s) => `'${String(s).replace(/'/g, "''")}'`;
+
+  const ps = [
+    '$ws = New-Object -ComObject WScript.Shell',
+    `$sc = $ws.CreateShortcut(${psQuote(lnk)})`,
+    `$sc.TargetPath = ${psQuote(exeFinal)}`,
+    `$sc.WorkingDirectory = ${psQuote(outDir)}`,
+    `$sc.IconLocation = ${psQuote(iconForShortcut)}`,
+    `$sc.Description = ${psQuote(`${APP_NAME} 视频格式转换器 —— 视频格式转换`)}`,
+    '$sc.Save()',
+    `if (Test-Path ${psQuote(lnk)}) { 'OK' } else { 'MISS' }`,
+  ].join('; ');
+
+  const res = spawnSync(
+    'powershell',
+    ['-NoProfile', '-NonInteractive', '-Command', ps],
+    { encoding: 'utf8', windowsHide: true },
+  );
+  if (res.status === 0 && (res.stdout || '').includes('OK')) {
+    log(`✔ 桌面快捷方式已创建：${lnk}`);
+    return true;
+  }
+  log(
+    `⚠ 桌面快捷方式创建失败（可手动右键 ${APP_NAME}.exe → 发送到 → 桌面快捷方式）：` +
+      `${(res.stderr || res.stdout || '').trim().split('\n')[0] || `exit=${res.status}`}`,
+  );
+  return false;
+}
+
 log('');
 log('✔ 便携版已生成');
 log(`  可执行文件：${path.relative(root, exeFinal)}`);
 log(`  目录总大小：${(totalBytes / 1048576).toFixed(1)} MB`);
 log(`  双击 ${APP_NAME}.exe 即可运行（无需安装、无需另装 ffmpeg）`);
+
+if (process.argv.includes('--shortcut')) {
+  createDesktopShortcut();
+} else {
+  log(`  提示：加 --shortcut 可同时在桌面创建快捷方式`);
+}

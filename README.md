@@ -83,6 +83,7 @@ npm run smoke:ui:full
 
 | 文档 | 内容 |
 | --- | --- |
+| [docs/FEATURES_AND_ROADMAP.md](docs/FEATURES_AND_ROADMAP.md) | **功能清单与后续优化方向**：现在能做什么（逐项含实现位置）、怎么打包运行、以及 20 条按投入产出比排序的优化项 |
 | [docs/SESSION_SUMMARY.md](docs/SESSION_SUMMARY.md) | 会话总结：分阶段做了什么、交付了什么、验证到什么程度、遗留问题；第 5 节按"已修复 / 仍然存在"列出代码审查发现 |
 | [docs/DECISIONS.md](docs/DECISIONS.md) | 决策日志（ADR 风格）：17 条关键决策的备选方案与代价 |
 | [docs/FEEDBACK_LOG.md](docs/FEEDBACK_LOG.md) | 反馈记录：人类给出的要求与 AI 的响应落地情况 |

@@ -13,12 +13,13 @@
 
 ## 界面截图
 
-以下 **5 张**截图位于 `docs/screenshots/`，**全部由界面自检命令自动生成**
+以下 **8 张**截图位于 `docs/screenshots/`，**全部由界面自检命令自动生成**
 （启动真实 Electron 窗口 → 加载真实视频 → 逐页断言并截图 → **在应用内真的点一次「开始转换」并等任务跑完**），
 不是手工摆拍的。它们分**两步**产出（原因见下方 `queue.png` 的说明）：
 
 ```bash
-# 第 1 步：产出 main.png / main-with-file.png / queue.png（空队列）/ settings.png
+# 第 1 步：产出 main.png / main-with-file.png / mode-recommended.png / mode-custom.png
+#          / main-advanced.png / queue.png（空队列）/ settings.png
 npm run smoke:ui:file
 
 # 第 2 步：额外产出 queue-done.png（有任务），不会覆盖第 1 步的 queue.png
@@ -70,7 +71,24 @@ npm run smoke:ui:full
 *设置页：ffmpeg / ffprobe 实际路径与版本、每个编码器的可用性（硬件编码器为**真实试跑**结果）、
 转换偏好、主题与缓存清理。这一页信息量最大，能直接反映运行环境是否正常。*
 
-> 说明：`docs/screenshots/` 下的 5 张 PNG 由上面那两步命令**自动生成并覆盖**（第 1 步出前 4 张，第 2 步出 `queue-done.png`），
+### 两种模式的差别，第一眼就能看见
+
+同一个文件、同一次运行，只切了右上角的模式开关——左「推荐设置」、右「自定义」：
+
+![推荐设置模式](docs/screenshots/mode-recommended.png)
+![自定义模式](docs/screenshots/mode-custom.png)
+
+*自定义模式的首屏**最上面**多出「专业参数」入口（`格式 / 编码器 / 音轨 / 字幕 / 裁剪 / 命名`），
+推荐模式下它整个不存在；两张图的其余骨架（视频信息摘要 / 用途卡片 / 在哪播）保持一致。*
+
+> 这两张图是**被用户反馈逼出来的**：最初两种模式的差异（专业参数区块、帧率下拉）
+> 全在折叠线以下，用户切到自定义后说的原话是"推荐设置和自定义没区别啊"。
+> 现在自检会直接断言"专业参数入口出现在首屏"（实测 `专业参数@152`），
+> 并把两种模式的首屏区块都打印出来。完整取舍见 [docs/DECISIONS.md](docs/DECISIONS.md) 的 D-018。
+
+> 说明：`docs/screenshots/` 下的 8 张 PNG 由上面那两步命令**自动生成并覆盖**
+> （第 1 步出 `main` / `main-with-file` / `mode-*` / `main-advanced` / `queue` / `settings`，
+> 第 2 步出 `queue-done.png`），
 > `smoke:ui:full` 一级同时执行 **66 项**界面断言（断言内容见 [docs/TEST_CASES.md](docs/TEST_CASES.md) 的 A7 / A8 / B0 节，
 > 截图清单见 [docs/screenshots/README.md](docs/screenshots/README.md)）。
 > 在你本地首次跑出截图之前，上面的图片引用会是空链接。

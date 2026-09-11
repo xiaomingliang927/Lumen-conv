@@ -58,8 +58,6 @@ import {
   languageName,
 } from '@/utils/format';
 
-const advancedOpen = ref(false);
-
 /**
  * 视频信息是否展开。
  *
@@ -110,20 +108,15 @@ const setLocal = (patch: Partial<ConversionOptions>): void => setActiveOverride(
 const appMode = computed<'recommended' | 'custom'>(() => settings.value?.appMode ?? 'recommended');
 
 async function setAppMode(mode: 'recommended' | 'custom'): Promise<void> {
-  await updateSettings({ appMode: mode });
   /*
-   * 切到自定义时**不再**自动展开专业参数。
+   * 模式切换现在**只做一件事**：把选择存进设置。
    *
-   * 原来这里写的是 `advancedOpen.value = true`（"省一次点击"）。当时专业参数在面板末尾、
-   * 折叠线以下，自动展开只是让页面变长，用户掉进字段堆里也不觉得突兀。
-   *
-   * 现在专业参数入口搬到了面板**最上面**（就是为了让两种模式在首屏就能看出区别），
-   * 自动展开的后果就变了：一进自定义模式，首屏全是要填的专业字段，
-   * 而「用途 / 在哪播 / 质量」这些主决策被推到 1000px 之外 —— 用户失去参照物。
-   *
-   * 所以改成默认收起：入口就在第一屏最上方（一眼能看出和推荐模式不一样），
-   * 想调参数再点开，多一次点击换回一个有上下文的界面，这个交换是划算的。
+   * 这里曾经有一行 `advancedOpen.value = true`（"切到自定义就展开专业参数，省一次点击"）；
+   * 再后来改成"不自动展开"。现在专业参数在自定义模式下是**常开**的
+   * （见 D-019：用户要求"用最初那个版本自己调整"），折叠状态本身不存在了，
+   * 所以这一行连同 `advancedOpen` 一起删掉 —— 没有折叠，就没有"要不要自动展开"。
    */
+  await updateSettings({ appMode: mode });
 }
 
 /** 体积上限输入：空字符串 / 0 / 负数都视为"不限制" */
@@ -481,7 +474,7 @@ void VIDEO_CODECS;
       <p class="muted">从左侧选择一个视频，这里会显示它的详细信息与转换设置</p>
     </div>
 
-    <div v-else class="details-scroll">
+    <div v-else class="details-scroll" :class="{ 'mode-custom': appMode === 'custom' }">
       <!-- 模式切换：推荐（大众）/ 自定义（专业） -->
       <div class="mode-switch">
         <button
@@ -508,28 +501,32 @@ void VIDEO_CODECS;
         （不然差别全在折叠线下，用户会觉得"两个模式没区别"）。
       -->
       <div class="plan-summary">
-        <span class="plan-usecase">{{ planSummary.useCase }}</span>
+        <!--
+          自定义模式下不显示用途名：那个模式下用途卡片是隐藏的（D-019），
+          写一个用户看不到、也改不了的推荐名只会让人困惑。参数摘要照常显示。
+        -->
+        <span class="plan-usecase">{{
+          appMode === 'custom' ? '自定义参数' : planSummary.useCase
+        }}</span>
         <span class="plan-detail">{{ planSummary.detail }}</span>
       </div>
 
       <!--
-        自定义模式的"专业参数"入口放在首屏。
-        之前它在质量区块之后（约 900px 处，折叠线下），于是用户切到自定义模式后
-        首屏看到的还是推荐模式那套内容，自然会觉得"两个模式没区别"。
+        自定义模式的专业参数：**直接摊开**，不再有折叠开关。
+        见 DECISIONS.md D-019：自定义模式是"我自己调参数"的地方，多一次折叠点击
+        只会让人觉得"这到底是不是专业模式"。原来是"专业参数 ▸ 点开"的折叠行。
       -->
       <section v-if="appMode === 'custom'" class="block pro-block">
-        <button class="advanced-toggle" @click="advancedOpen = !advancedOpen">
-          <svg viewBox="0 0 12 12" width="10" height="10" :style="{ transform: advancedOpen ? 'rotate(90deg)' : '' }">
-            <path d="M4.5 2.5 8 6l-3.5 3.5" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
-          </svg>
-          专业参数
-          <!-- 这里只列**里面真正有的**项目：帧率不在此处，它在「质量与尺寸」里（自定义模式才出现） -->
+        <header class="block-head">
+          <h4>专业参数</h4>
+          <!-- 这里只列**里面真正有的**项目：帧率不在此处，它在「质量与尺寸」里 -->
           <span class="muted">格式 / 编码器 / 音轨 / 字幕 / 裁剪 / 命名</span>
-        </button>
+        </header>
 
-        <div v-if="advancedOpen" class="advanced-body">
+        <div class="advanced-body">
 
-          <!-- 用途已经把常用组合包好了；这里给"我就想自己指定容器"的用户留出口 -->
+          <!-- 自己指定容器格式的出口。这里的文案**不能提「用途卡片」**—— -->
+          <!-- 专业参数只在自定义模式渲染，而那个模式下用途卡片是隐藏的（D-019） -->
           <label class="field">
             <span class="field-label">输出格式（手动指定）</span>
             <select
@@ -542,7 +539,7 @@ void VIDEO_CODECS;
               </optgroup>
             </select>
             <span class="field-hint">
-              手动改格式会覆盖所选用途的推荐设置；改完可以再点一次用途卡片恢复
+              选什么就按什么转。切回「推荐设置」可以用用途卡片一键恢复推荐组合
             </span>
           </label>
 
@@ -799,9 +796,16 @@ void VIDEO_CODECS;
         </div>
       </section>
 
-      <!-- ② 输出格式 -->
-      <!-- ② 要拿去干什么（主决策） -->
-      <section class="block">
+      <!--
+        ② 要拿去干什么（主决策）——**只在推荐模式出现**。
+        见 DECISIONS.md D-019：自定义模式是给"我自己知道要什么参数"的人用的，
+        再摆一排"用途推荐卡片"既占首屏、又和专业参数打架（用户原话："自定义不要这个推荐，
+        缺少专业性"）。所以自定义模式整块隐藏——包括下方的"偏离推荐值"提示与用途小贴士，
+        因为它们讲的都是"推荐值"，在那个语境里没有意义。
+        唯一的例外是**兼容性预检**：它拦的是"转完才发现播不了"，属于事实而不是推荐，
+        两种模式都必须有，所以单独拆成一个区块放在后面。
+      -->
+      <section v-if="appMode === 'recommended'" class="block usecase-block">
         <header class="block-head">
           <h4>你要拿去干什么</h4>
           <span class="muted">选一个用途就够了，细节我来定</span>
@@ -855,9 +859,20 @@ void VIDEO_CODECS;
         <div v-if="activeUseCase?.tip" class="alert alert-info preset-tip">
           <span>💡</span><span>{{ activeUseCase.tip }}</span>
         </div>
+      </section>
 
-        <!-- 兼容性预检：把"转完才发现用不了"的坑提前拦住 -->
-        <div v-if="compatibilityIssues.length > 0" class="compat-list">
+      <!--
+        兼容性预检：两种模式都显示。
+        自定义模式下用户更容易配出"设备播不了"的组合（比如手选 H.265 给老电视），
+        所以这块**不能**跟着用途卡片一起隐藏。
+      -->
+      <section v-if="compatibilityIssues.length > 0" class="block compat-block">
+        <header class="block-head">
+          <h4>兼容性预检</h4>
+          <span class="muted">转之前先看，避免转完才发现播不了</span>
+        </header>
+
+        <div class="compat-list">
           <div
             v-for="(issue, i) in compatibilityIssues"
             :key="i"
@@ -885,7 +900,7 @@ void VIDEO_CODECS;
       </section>
 
       <!-- ③ 播放在什么设备上 + 体积上限 -->
-      <section class="block">
+      <section class="block device-block">
         <header class="block-head">
           <h4>在哪播 / 多大体积</h4>
         </header>
@@ -939,7 +954,7 @@ void VIDEO_CODECS;
       </section>
 
       <!-- ④ 质量与尺寸（推荐模式只留这两项；帧率属于专业参数，放自定义模式） -->
-      <section class="block">
+      <section class="block quality-block">
         <header class="block-head">
           <h4>质量与尺寸</h4>
           <span v-if="estimatedText" class="chip chip-accent" :title="estimatedText.note ?? ''">
@@ -1043,6 +1058,44 @@ void VIDEO_CODECS;
   flex: 1;
   overflow-y: auto;
   padding: 0 14px 14px;
+  /*
+   * 用 flex 排列各区块，是为了让**自定义模式**能只靠 CSS 调整顺序
+   * （参数在前、信息与设备在后），而不必把模板复制成两套。
+   * 见下方 `.details-scroll.mode-custom .xxx { order }`。
+   */
+  display: flex;
+  flex-direction: column;
+}
+.details-scroll > * {
+  flex: none;
+}
+
+/*
+ * 自定义模式的排布：**参数优先**。
+ *
+ * 用户反馈（原话）："自定义不要这个推荐，缺少专业性，这个用最初那个版本自己调整更合适"。
+ * 于是自定义模式下：
+ *   - 用途推荐卡片整块不渲染（模板里的 v-if），
+ *   - 专业参数直接摊开，
+ *   - 顺序变成 专业参数 → 质量与尺寸 → 在哪播 / 多大体积 → 视频信息 → 兼容性预检，
+ *     也就是"要调的东西按调整顺序排前面，参考信息与检查结果放后面"。
+ *     （体积上限跟"质量与尺寸"是一组参数，不能埋到视频信息后面去。）
+ * 推荐模式不受影响（默认 order 全是 0，保持模板顺序）。
+ */
+.details-scroll.mode-custom .pro-block {
+  order: 1;
+}
+.details-scroll.mode-custom .quality-block {
+  order: 2;
+}
+.details-scroll.mode-custom .device-block {
+  order: 3;
+}
+.details-scroll.mode-custom .info-block {
+  order: 4;
+}
+.details-scroll.mode-custom .compat-block {
+  order: 5;
 }
 
 .block {
@@ -1388,27 +1441,7 @@ void VIDEO_CODECS;
   text-overflow: ellipsis;
 }
 
-.advanced-toggle {
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  width: 100%;
-  padding: 4px 0;
-  font-size: 12.5px;
-  font-weight: 600;
-  color: var(--text-secondary);
-}
-.advanced-toggle:hover {
-  color: var(--text-primary);
-}
-.advanced-toggle svg {
-  transition: transform 0.15s;
-}
-.advanced-toggle .muted {
-  font-weight: 400;
-  font-size: 11px;
-  margin-left: auto;
-}
+/* 自定义模式下专业参数是**常开**的，原来的 `.advanced-toggle` 折叠开关样式已随之删除（见 D-019） */
 
 .advanced-body {
   display: flex;
@@ -1419,6 +1452,10 @@ void VIDEO_CODECS;
   border-radius: var(--radius);
   background: var(--bg-base);
   border: 1px solid var(--border-subtle);
+}
+/* 紧跟区块标题时不再叠加间距（标题自己已有 margin-bottom） */
+.pro-block .advanced-body {
+  margin-top: 0;
 }
 
 /* ---------- 模式切换（推荐 / 自定义） ---------- */

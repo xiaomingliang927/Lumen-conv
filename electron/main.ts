@@ -622,12 +622,23 @@ async function runSmokeCheck(): Promise<void> {
       recommendedHasModeBtn: boolean;
       customHasAdvanced: boolean;
       backToRecommended: boolean;
+      recommendedUseCaseCards: number;
+      customUseCaseCards: number;
+      customFieldsVisible: boolean;
       error: string;
     }>(
       '验证推荐 / 自定义模式切换',
       `(async () => {
         const tick = () => new Promise((r) => setTimeout(r, 300));
-        const advShown = () => Boolean(document.querySelector('.advanced-toggle'));
+        /*
+         * 「专业参数有没有出现」改用 .pro-block 判定。
+         * 原来判定的是 .advanced-toggle 这个折叠开关 —— 现在自定义模式下专业参数是**常开**的，
+         * 开关已经不存在了（见 D-019）。继续用旧选择器会得到"永远没有专业参数"的假结论。
+         */
+        const advShown = () => Boolean(document.querySelector('.pro-block'));
+        /** 专业参数字段是否**直接可见**（不需要任何点击） */
+        const fieldsVisible = () => document.querySelectorAll('.pro-block .advanced-body .field').length > 0;
+        const useCaseCards = () => document.querySelectorAll('.usecase-card').length;
         const activeBtn = () =>
           (document.querySelector('.mode-btn.active')?.textContent ?? '').replace(/\\s+/g, ' ').trim().slice(0, 12);
         const clickMode = (idx) => {
@@ -644,12 +655,15 @@ async function runSmokeCheck(): Promise<void> {
           // 模式切换会触发 Vue 更新，多等一拍再判定（早期只等一次，读到的是旧 DOM）
           await tick();
           const recommendedHasAdvanced = advShown();
+          const recommendedUseCaseCards = useCaseCards();
 
           // 切到自定义
           clickMode(1);
           await tick();
           await tick();
           const customHasAdvanced = advShown();
+          const customUseCaseCards = useCaseCards();
+          const customFieldsVisible = fieldsVisible();
 
           // 切回推荐
           clickMode(0);
@@ -663,10 +677,13 @@ async function runSmokeCheck(): Promise<void> {
             recommendedHasModeBtn,
             customHasAdvanced,
             backToRecommended,
+            recommendedUseCaseCards,
+            customUseCaseCards,
+            customFieldsVisible,
             error: '',
           };
         } catch (e) {
-          return { storedMode: '', activeBtn: '', recommendedHasAdvanced: true, recommendedHasModeBtn: false, customHasAdvanced: false, backToRecommended: false, error: String(e) };
+          return { storedMode: '', activeBtn: '', recommendedHasAdvanced: true, recommendedHasModeBtn: false, customHasAdvanced: false, backToRecommended: false, recommendedUseCaseCards: -1, customUseCaseCards: -1, customFieldsVisible: false, error: String(e) };
         }
       })()`,
     );
@@ -685,14 +702,33 @@ async function runSmokeCheck(): Promise<void> {
           : '推荐模式下无专业参数',
       ],
       [
-        '自定义模式：出现专业参数入口',
-        modeSwitch.customHasAdvanced,
-        modeSwitch.customHasAdvanced ? '出现「专业参数」' : '切到自定义后仍无专业参数',
+        '自定义模式：出现专业参数（且字段直接可见，不需要再点一次）',
+        modeSwitch.customHasAdvanced && modeSwitch.customFieldsVisible,
+        modeSwitch.customHasAdvanced
+          ? modeSwitch.customFieldsVisible
+            ? '专业参数区块与字段都在'
+            : '专业参数区块在，但字段没渲染出来'
+          : '切到自定义后仍无专业参数',
       ],
       [
         '切回推荐模式：专业参数重新隐藏',
         modeSwitch.backToRecommended,
         modeSwitch.backToRecommended ? '已隐藏' : '仍显示',
+      ],
+      /*
+       * 用户反馈（原话）："自定义不要这个推荐，缺少专业性，这个用最初那个版本自己调整更合适"。
+       * 所以自定义模式必须**没有**用途推荐卡片，推荐模式必须**有**。
+       * 这两条是这次改动最核心的验收点，专门断言，避免以后又被"顺手加回去"。
+       */
+      [
+        '自定义模式：不出现「用途」推荐卡片（用户明确要求）',
+        modeSwitch.customUseCaseCards === 0,
+        `自定义模式下用途卡片数 = ${modeSwitch.customUseCaseCards}`,
+      ],
+      [
+        '推荐模式：用途推荐卡片齐全',
+        modeSwitch.recommendedUseCaseCards >= 8,
+        `推荐模式下用途卡片数 = ${modeSwitch.recommendedUseCaseCards}`,
       ],
     );
 
@@ -700,7 +736,7 @@ async function runSmokeCheck(): Promise<void> {
      * 两种模式各截一张图，并量化"可见区块"的差异。
      *
      * 起因：用户反馈"推荐设置和自定义没区别啊"。
-     * 光断言 .advanced-toggle 的存在与否看不出真实观感 —— 需要把两种模式的
+     * 光断言「有没有专业参数区块」看不出真实观感 —— 需要把两种模式的
      * 首屏内容都记录下来，才知道用户实际看到的是什么。
      */
     const modeShots: { mode: string; blocks: string[]; scrollH: number; viewH: number }[] = [];
@@ -729,16 +765,6 @@ async function runSmokeCheck(): Promise<void> {
           const titleOf = (b) => {
             const h4 = b.querySelector('h4');
             if (h4) return h4.textContent.trim();
-            const tg = b.querySelector('.advanced-toggle');
-            if (tg) {
-              const direct = [...tg.childNodes]
-                .filter((n) => n.nodeType === 3)
-                .map((n) => n.textContent)
-                .join('')
-                .trim();
-              if (direct) return direct;
-              return tg.textContent.replace(/\\s+/g, ' ').trim().slice(0, 6);
-            }
             return '(无标题)';
           };
           const blocks = [...document.querySelectorAll('.details .block')].map((b) => {
@@ -793,7 +819,7 @@ async function runSmokeCheck(): Promise<void> {
      * 所以必须直接断言"自定义模式下，专业参数入口出现在首屏"，而不是只看两种模式串是否不同。
      */
     extraChecks.push([
-      '自定义模式：专业参数入口出现在首屏（不用滚动就能看到）',
+      '自定义模式：专业参数面板出现在首屏（不用滚动就能看到）',
       Boolean(cus && cus.blocks.some((b) => b.startsWith('专业参数') && !b.includes('折叠线下'))),
       cus
         ? cus.blocks.find((b) => b.startsWith('专业参数'))
@@ -830,21 +856,19 @@ async function runSmokeCheck(): Promise<void> {
         const btns = [...document.querySelectorAll('.mode-btn')];
         if (btns[1]) btns[1].click();
         await new Promise((r) => setTimeout(r, 400));
-        let adv = document.querySelector('.advanced-toggle');
-        if (adv && !document.querySelector('.advanced-body')) {
-          adv.click();
-          await new Promise((r) => setTimeout(r, 320));
-        }
-        adv = document.querySelector('.advanced-toggle');
+        /*
+         * 自定义模式下专业参数是常开的，**不需要点任何开关**。
+         * 这里直接断言字段已经渲染出来 —— 如果哪天又把它折叠回去，这条会失败。
+         */
         return {
-          ok: Boolean(document.querySelector('.advanced-body')),
+          ok: document.querySelectorAll('.pro-block .advanced-body .field').length > 0,
           activeBtn: (document.querySelector('.mode-btn.active')?.textContent ?? '').replace(/\\s+/g, ' ').trim().slice(0, 10),
-          hasAdvanced: Boolean(adv),
+          hasAdvanced: Boolean(document.querySelector('.pro-block')),
         };
       })()`,
     );
     extraChecks.push([
-      '自检前置：能进入自定义模式并展开专业参数',
+      '自检前置：能进入自定义模式并看到专业参数字段',
       enteredCustom.ok,
       enteredCustom.ok
         ? `当前高亮「${enteredCustom.activeBtn}」`
@@ -887,9 +911,7 @@ async function runSmokeCheck(): Promise<void> {
         try {
           const before = count();
 
-          // 1) 打开专业参数（编码器在里面）
-          const adv = document.querySelector('.advanced-toggle');
-          if (adv && !document.querySelector('.advanced-body')) adv.click();
+          // 编码器下拉在专业参数里；自定义模式下它**常开**，不需要先展开
           await tick();
 
           /*
@@ -956,14 +978,24 @@ async function runSmokeCheck(): Promise<void> {
       ],
     );
 
-    // 复原：用途点回默认（会把编码器与设备相关设置一并覆盖回去）
+    /*
+     * 复原：用途点回默认（会把编码器与设备相关设置一并覆盖回去）。
+     *
+     * ⚠ 必须先切回**推荐模式**：用途卡片现在只在推荐模式渲染（D-019），
+     * 在自定义模式下 querySelector('.usecase-card') 是 null，这一步会静默失效，
+     * 于是 hevc / android-old 这些测试中间状态会被带进后面的用例。
+     * 后面的"偏离推荐值"检查本来也要在推荐模式跑，所以这里就停在推荐模式。
+     */
     await evalJs<boolean>(
-      '恢复默认用途（兼容性测试后）',
-      `(() => {
+      '切回推荐模式并恢复默认用途（兼容性测试后）',
+      `(async () => {
+        const tick = () => new Promise((r) => setTimeout(r, 300));
+        const btns = [...document.querySelectorAll('.mode-btn')];
+        if (btns[0]) btns[0].click();
+        await tick();
         const first = document.querySelector('.usecase-card');
         if (first) first.click();
-        const adv = document.querySelector('.advanced-toggle');
-        if (adv && document.querySelector('.advanced-body')) adv.click();
+        await tick();
         return true;
       })()`,
     );
@@ -975,7 +1007,13 @@ async function runSmokeCheck(): Promise<void> {
      *
      * 原实现里手动改格式**不会清掉用途标记**，于是用途卡片继续高亮、
      * 继续显示该用途的提示，而实际参数已经不是那一套了 —— 卡片等于在说谎。
-     * 这里验证：改格式后卡片保留高亮 + 出现「参数已偏离」提示 + 一键恢复能收回。
+     * 这里验证：改了参数后卡片保留高亮 + 出现「参数已偏离」提示 + 一键恢复能收回。
+     *
+     * ⚠ 这条**必须切回推荐模式**再跑（D-019 之后）：
+     * 用途卡片与"偏离提示"都只存在于推荐模式；而原先这里改的是专业参数里的
+     * 「输出格式」下拉，那个只在自定义模式有 —— 两个条件现在互斥。
+     * 所以改成在推荐模式里动**质量**下拉：质量同样属于 deviations 追踪的字段，
+     * 而且推荐模式下本来就允许改，正是"用户会遇到的真实路径"。
      */
     const deviation = await evalJs<{
       beforeActive: string;
@@ -986,24 +1024,25 @@ async function runSmokeCheck(): Promise<void> {
       restoredDeviation: boolean;
       error: string;
     }>(
-      '验证「手动改格式」会解除用途绑定',
+      '验证「手动改参数」会提示偏离推荐值',
       `(async () => {
         const tick = () => new Promise((r) => setTimeout(r, 240));
         const activeLabel = () => (document.querySelector('.usecase-card.active .usecase-label')?.textContent ?? '').trim();
         const deviationEl = () => document.querySelector('.deviation-note');
         try {
-          const beforeActive = activeLabel();
-
-          const adv = document.querySelector('.advanced-toggle');
-          if (adv && !document.querySelector('.advanced-body')) adv.click();
+          // 先切回推荐模式（用途卡片与偏离提示只在这里）
+          const btns = [...document.querySelectorAll('.mode-btn')];
+          if (btns[0]) btns[0].click();
+          await tick();
           await tick();
 
-          // 专业参数里的「输出格式」下拉（含 optgroup），切到 MKV 收藏
-          const sel = [...document.querySelectorAll('.advanced-body select')].find(
-            (s) => s.querySelector('optgroup')
-          );
-          if (!sel) return { beforeActive, afterActive: '', deviationShown: false, deviationText: '', restoredActive: '', restoredDeviation: false, error: '未找到输出格式下拉' };
-          const opt = [...sel.querySelectorAll('option')].find((o) => o.value === 'mkv-archive') ?? [...sel.querySelectorAll('option')].find((o) => o.value !== sel.value);
+          const beforeActive = activeLabel();
+
+          // 动「质量」下拉：它在「质量与尺寸」区块里，推荐/自定义两种模式都可见
+          const sel = document.querySelector('.quality-block select');
+          if (!sel) return { beforeActive, afterActive: '', deviationShown: false, deviationText: '', restoredActive: '', restoredDeviation: false, error: '未找到质量下拉' };
+          const opt = [...sel.querySelectorAll('option')].find((o) => o.value !== sel.value);
+          if (!opt) return { beforeActive, afterActive: '', deviationShown: false, deviationText: '', restoredActive: '', restoredDeviation: false, error: '质量下拉只有一个选项' };
           sel.value = opt.value;
           sel.dispatchEvent(new Event('change', { bubbles: true }));
           await tick();
@@ -1033,14 +1072,14 @@ async function runSmokeCheck(): Promise<void> {
 
     extraChecks.push(
       [
-        '手动改格式后：用途卡片保留高亮（不丢失"我本来想干什么"）',
+        '手动改参数后：用途卡片保留高亮（不丢失"我本来想干什么"）',
         deviation.afterActive !== '' && deviation.afterActive === deviation.beforeActive,
         deviation.error
           ? `执行出错：${deviation.error}`
           : `用途仍为「${deviation.afterActive}」`,
       ],
       [
-        '手动改格式后：出现「参数已偏离推荐值」提示',
+        '手动改参数后：出现「参数已偏离推荐值」提示',
         deviation.deviationShown && deviation.deviationText.includes('手动改过'),
         deviation.deviationText || '（无提示）',
       ],
@@ -1050,6 +1089,18 @@ async function runSmokeCheck(): Promise<void> {
         `高亮恢复为「${deviation.restoredActive}」，偏离提示${deviation.restoredDeviation ? '仍在' : '已消失'}`,
       ],
     );
+
+    // 偏离检查把模式切回了推荐模式；后面的专业参数相关检查需要自定义模式
+    await evalJs<boolean>(
+      '切回自定义模式（继续验证专业参数）',
+      `(async () => {
+        const btns = [...document.querySelectorAll('.mode-btn')];
+        if (btns[1]) btns[1].click();
+        await new Promise((r) => setTimeout(r, 360));
+        return true;
+      })()`,
+    );
+    await shotDelay(250);
 
     /*
      * 输出文件命名：从"裸模板输入框"改成"下拉选项 + 自定义"。
@@ -1083,8 +1134,7 @@ async function runSmokeCheck(): Promise<void> {
         `(async () => {
           const tick = () => new Promise((r) => setTimeout(r, 240));
           try {
-            const adv = document.querySelector('.advanced-toggle');
-            if (adv && !document.querySelector('.advanced-body')) adv.click();
+            // 命名下拉在专业参数里；自定义模式下常开，不需要展开
             await tick();
             const sel = [...document.querySelectorAll('.advanced-body select')].find(
               (s) => [...s.options].some((o) => o.value === 'custom')
@@ -1224,9 +1274,9 @@ async function runSmokeCheck(): Promise<void> {
       ],
     );
 
-      // 收尾：恢复默认命名与用途，避免影响后续截图
+      // 收尾：恢复默认命名，避免影响后续截图（用途卡片不在自定义模式里，这里不动它）
       await evalJs<boolean>(
-        '恢复默认命名与用途',
+        '恢复默认命名',
         `(() => {
           const sel = [...document.querySelectorAll('.advanced-body select')].find(
             (s) => [...s.options].some((o) => o.value === 'custom')
@@ -1238,30 +1288,18 @@ async function runSmokeCheck(): Promise<void> {
               sel.dispatchEvent(new Event('change', { bubbles: true }));
             }
           }
-          const first = document.querySelector('.usecase-card');
-          if (first) first.click();
-          const adv = document.querySelector('.advanced-toggle');
-          if (adv && document.querySelector('.advanced-body')) adv.click();
           return true;
         })()`,
       );
       await shotDelay(400);
 
       /*
-       * 展开「专业参数」单独截一张。
+       * 「专业参数」单独截一张。
        *
        * 起因：用户在界面上反馈"很奇怪" —— 专业参数区域的布局是碎的。
-       * 折叠状态下截图看不到这一块，所以专门截一张展开态，让问题可见、
-       * 也让后续修复有可比对的证据。
+       * 现在它在自定义模式下是**常开**的（D-019），所以不需要再点开关；
+       * 截图仍然保留，用于比对字段布局。
        */
-      await evalJs<boolean>(
-        '展开专业参数',
-        `(() => {
-          const adv = document.querySelector('.advanced-toggle');
-          if (adv && !document.querySelector('.advanced-body')) adv.click();
-          return true;
-        })()`,
-      );
       await shotDelay(500);
       await capture('main-advanced.png');
       const advReport = await evalJs<{
@@ -1274,7 +1312,7 @@ async function runSmokeCheck(): Promise<void> {
         '检查专业参数布局',
         `(() => {
           const body = document.querySelector('.advanced-body');
-          if (!body) return { rows: 0, selects: 0, inputs: 0, overflowW: false, widest: '未展开' };
+          if (!body) return { rows: 0, selects: 0, inputs: 0, overflowW: false, widest: '未渲染' };
           const panel = document.querySelector('.details');
           const widest = [...body.querySelectorAll('*')]
             .map((el) => ({ cls: String(el.className || el.tagName), w: el.getBoundingClientRect().width }))
@@ -1290,19 +1328,10 @@ async function runSmokeCheck(): Promise<void> {
         })()`,
       );
       extraChecks.push([
-        '专业参数：展开后不横向溢出',
+        '专业参数：字段不横向溢出（自定义模式下常开）',
         !advReport.overflowW,
         `${advReport.rows} 个字段、${advReport.selects} 个下拉，最宽元素 ${advReport.widest}，面板宽 ${(advReport as unknown as { panelW: number }).panelW}px`,
       ]);
-      // 截完收起，保持后续截图与之前一致
-      await evalJs<boolean>(
-        '收起专业参数',
-        `(() => {
-          const adv = document.querySelector('.advanced-toggle');
-          if (adv && document.querySelector('.advanced-body')) adv.click();
-          return true;
-        })()`,
-      );
       await shotDelay(300);
 
     /*
@@ -1320,6 +1349,23 @@ async function runSmokeCheck(): Promise<void> {
      */
     const secondSample = path.join(smokeAssetsDir(), 'samples', 'sample-hevc.mkv');
     if (existsSync(secondSample)) {
+      /*
+       * 多文件这一组回到**推荐模式**跑。
+       *
+       * 原因：「用途选择跨文件保留」要读"当前选中的用途"，而用途卡片与摘要里的用途名
+       * 都只存在于推荐模式（自定义模式下摘要显示的是"自定义参数"）。
+       * 在这里切模式也顺带覆盖了"切模式后已加载的文件不受影响"这条隐含预期。
+       */
+      await evalJs<boolean>(
+        '切回推荐模式（验证多文件行为）',
+        `(async () => {
+          const btns = [...document.querySelectorAll('.mode-btn')];
+          if (btns[0]) btns[0].click();
+          await new Promise((r) => setTimeout(r, 360));
+          return true;
+        })()`,
+      );
+      await shotDelay(200);
       await evalJs<boolean>(
         '加载第二个文件',
         `(() => { window.__lumenAddFiles(${JSON.stringify([secondSample])}); return true; })()`,
@@ -1336,10 +1382,25 @@ async function runSmokeCheck(): Promise<void> {
       await shotDelay(400);
       const keptPreset = await evalJs<{ label: string; files: number }>(
         '检查跨文件后的用途选择',
-        `(() => ({
-          label: (document.querySelector('.usecase-card.active .usecase-label')?.textContent ?? '').trim(),
-          files: document.querySelectorAll('.file-card').length,
-        }))()`,
+        `(() => {
+          /*
+           * 读「方案摘要」里的用途，而不是用途卡片（.usecase-card.active）。
+           * D-019 之后用途卡片只在推荐模式渲染，而这一段跑在自定义模式下，
+           * 用卡片选择器会读到空字符串，把"用途没保留"这个假结论报出来
+           * （实测就是这么失败了一次）。.plan-usecase 两种模式都在。
+           *
+           * ⚠ 注意：这段字符串是模板字面量，**注释里也不要写反引号** ——
+           * 反引号会提前结束模板串，把后面的内容当成 JS 表达式解析
+           * （踩过一次：注释里写了「点加 usecase-card 加 .active」，结果编译出的表达式里
+           * 多出一个未定义的 card 标识符，自检直接 ReferenceError）。
+           */
+          const fromSummary = (document.querySelector('.plan-usecase')?.textContent ?? '').trim();
+          const fromCard = (document.querySelector('.usecase-card.active .usecase-label')?.textContent ?? '').trim();
+          return {
+            label: fromSummary || fromCard,
+            files: document.querySelectorAll('.file-card').length,
+          };
+        })()`,
       );
       extraChecks.push([
         '用途选择跨文件保留',

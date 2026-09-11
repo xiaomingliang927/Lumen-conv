@@ -13,12 +13,58 @@
 
 ## 直接下载（不想自己构建）
 
-**便携版（Windows，解压即用，内置 ffmpeg）**：
-[Lumen-conv-portable-v1.0.0.zip](https://github.com/xiaomingliang927/Lumen-conv/releases/download/v1.0.0/Lumen-conv-portable-v1.0.0.zip)
-（约 238 MB，解压后双击 `Lumen-conv.exe`）
+**便携版（Windows，解压即用）** —— 三个附件按需选一个：
+
+| 附件 | 大小 | 适合谁 |
+| --- | --- | --- |
+| [`Lumen-conv-portable-v1.0.0.7z`](https://github.com/xiaomingliang927/Lumen-conv/releases/download/v1.0.0/Lumen-conv-portable-v1.0.0.7z) | **153.6 MB** | **推荐**。完整版、体积最小。Windows 11 资源管理器可直接解压；Windows 10 需装 7-Zip / Bandizip / WinRAR |
+| [`Lumen-conv-portable-v1.0.0.zip`](https://github.com/xiaomingliang927/Lumen-conv/releases/download/v1.0.0/Lumen-conv-portable-v1.0.0.zip) | 237.1 MB | 完整版、通用格式，任何解压工具都能开 |
+| [`Lumen-conv-slim-v1.0.0.zip`](https://github.com/xiaomingliang927/Lumen-conv/releases/download/v1.0.0/Lumen-conv-slim-v1.0.0.zip) | 119.5 MB | **精简版**：不内置 ffmpeg，首次运行需在「设置 → 运行环境」指定你自己的 ffmpeg 路径 |
+
+完整版**解压即用**：解压到任意目录，双击 `Lumen-conv.exe`，无需安装、也无需另装 ffmpeg。
+
+> **下载慢怎么办（本机实测，直连慢到不可用）**
+>
+> | 通道 | 实测速度 | 下完 153.6 MB 需要 |
+> | --- | --- | --- |
+> | 直连 GitHub | 0.02 MB/s | **约 142 分钟** |
+> | `https://ghfast.top/` | 0.09 MB/s | 约 27 分钟 |
+> | `https://gh-proxy.com/` | **0.59 MB/s** | **约 4.4 分钟** |
+>
+> 用法就是把原始地址**接在镜像后面**。推荐附件（`.7z`）的两个加速地址：
+>
+> ```
+> https://gh-proxy.com/https://github.com/xiaomingliang927/Lumen-conv/releases/download/v1.0.0/Lumen-conv-portable-v1.0.0.7z
+> https://ghfast.top/https://github.com/xiaomingliang927/Lumen-conv/releases/download/v1.0.0/Lumen-conv-portable-v1.0.0.7z
+> ```
+>
+> 换成别的附件名就是另外两个包（`-portable-v1.0.0.zip` / `-slim-v1.0.0.zip`）。
+>
+> ⚠️ 速度是**在开发这台机器上实测**的，不同网络/时段差别很大，请以你本地为准；
+> 两个镜像都验证过内容正确（HTTP 206 + 文件头魔数 + 大小一致），
+> 但**第三方镜像会看到你的下载流量**，介意的话可以用最小的 `.7z` 直连慢慢下。
+
+<details>
+<summary>为什么 .7z 比 .zip 小 83 MB（点开看构成）</summary>
+
+实测 zip（237.1 MB）里的压缩后占用：
+
+| 压缩后 | 内容 |
+| --- | --- |
+| 86.8 MB | Electron 主程序 `Lumen-conv.exe`（框架自带，省不掉） |
+| 53.5 MB | `ffmpeg.exe`（转换引擎） |
+| 53.4 MB | `ffprobe.exe`（媒体信息探测） |
+| 9.8 MB | `dxcompiler.dll`（Chromium 的 D3D12 着色器编译） |
+| ~33 MB | 其余 dll / pak / icudtl 等 |
+
+两个 ffmpeg 二进制合计 107 MB，是除了框架之外的最大项。
+改用 **7z（LZMA2）** 重压后整体降到 153.6 MB —— 同样的内容，只是压缩算法更强。
+另外打包脚本会自动**精简语言包**（Electron 自带 55 个 `.pak` 共 43.7 MB，本应用全中文界面，
+只保留 zh-CN / en-US / en-GB，省下 42 MB）。
+</details>
 
 完整发布说明见 [Releases](https://github.com/xiaomingliang927/Lumen-conv/releases/tag/v1.0.0)。
-想自己构建或改用"精简版"（不内置 ffmpeg，约 324 MB）见下方「安装」与「打包」。
+想自己构建或改用"精简版"见下方「安装」与「打包」。
 
 ---
 
@@ -203,7 +249,7 @@ npm run smoke:ui:full
 
 ### 需求 4：会话总结 + 开发者决策与反馈记录
 
-即本仓库 `docs/` 下的文档：`SESSION_SUMMARY.md`（会话总结）、`DECISIONS.md`（决策日志，D-001 … D-017）、
+即本仓库 `docs/` 下的文档：`SESSION_SUMMARY.md`（会话总结）、`DECISIONS.md`（决策日志，D-001 … D-026）、
 `FEEDBACK_LOG.md`（反馈记录）、`CORE_IMPLEMENTATION.md`（核心实现说明）、`TEST_CASES.md`（边界与异常用例）。
 其中 SESSION_SUMMARY 明确区分了"已实机验证"与"尚未验证"的部分，并把代码缺陷按"已修复 / 仍然存在"两部分列出。
 
@@ -491,12 +537,12 @@ npm run dist:portable   # = node scripts/package-portable.mjs --build
 | --- | --- |
 | 目录 | `release/Lumen-conv-便携版/` |
 | 可执行文件 | `Lumen-conv.exe`，**200.4 MB**（210,149,888 字节） |
-| 目录总计 | **602.3 MB**（Electron 运行时 + `ffmpeg.exe` 139.1 MB + `ffprobe.exe` 138.9 MB，按 1024 进制） |
+| 目录总计 | **602.4 MB**（Electron 运行时 + `ffmpeg.exe` 139.1 MB + `ffprobe.exe` 138.9 MB，按 1024 进制） |
 | 运行方式 | 双击即可，无需安装、无需另装 ffmpeg；整个目录可直接拷给别人 |
 
 `release/` 已在 `.gitignore` 中排除（`git check-ignore -v release/` 会命中 `.gitignore` 第 4 行），所以产物不入库。
 
-便携版**实跑了全套界面自检并 83/83 通过、退出码 0**：
+便携版**实跑了全套界面自检并 82/82 通过、退出码 0**：
 
 ```bash
 release/Lumen-conv-便携版/Lumen-conv.exe --smoke \

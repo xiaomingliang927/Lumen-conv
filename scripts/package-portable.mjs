@@ -28,6 +28,7 @@ import {
   existsSync,
   mkdirSync,
   readFileSync,
+  readdirSync,
   renameSync,
   rmSync,
   statSync,
@@ -119,6 +120,48 @@ cpSync(electronDist, staging, {
   recursive: true,
   filter: (src) => !src.endsWith('default_app.asar'),
 });
+
+/*
+ * 瘦身：只保留用得到的语言包。
+ *
+ * Electron 自带 55 个 .pak 语言包，合计 **43.7 MB**（未压缩），而本应用是全中文界面，
+ * 只有 zh-CN / en-US / en-GB 有意义。注意**不能全删**：Chromium 缺了 locale 资源会
+ * 直接回退失败，连界面都起不来 —— 所以保留这三个，其余删掉（省 42 MB）。
+ *
+ * 这段是"下载太慢"逼出来的：当时 zip 237 MB，其中两个 ffmpeg 二进制 107 MB、
+ * Electron 主程序 87 MB，语言包虽然单个不大，但 55 个加起来是第三大项。
+ */
+const localesDir = path.join(staging, 'locales');
+if (existsSync(localesDir)) {
+  const keep = new Set(['zh-CN.pak', 'en-US.pak', 'en-GB.pak']);
+  let removed = 0;
+  let freed = 0;
+  for (const name of readdirSync(localesDir)) {
+    if (keep.has(name)) continue;
+    const full = path.join(localesDir, name);
+    try {
+      freed += statSync(full).size;
+      rmSync(full, { force: true });
+      removed++;
+    } catch {
+      /* 删不掉就留下，不影响功能 */
+    }
+  }
+  log(`语言包瘦身：保留 3 个（zh-CN / en-US / en-GB），删除 ${removed} 个，省 ${(freed / 1048576).toFixed(1)} MB`);
+}
+
+/*
+ * 清掉自检写在便携版目录里的截图。
+ *
+ * `npm run smoke:ui:*` 在打包态运行时会把截图写到 **exe 所在目录**（这是设计：打包态基准目录
+ * 就是 exe 旁边，见 D-017），如果上一轮在便携版目录里跑过自检，`docs/screenshots/` 就会被
+ * 一起打包进去 —— 那是测试产物，不该进分发包。
+ */
+const strayDocs = path.join(staging, 'docs');
+if (existsSync(strayDocs)) {
+  rmSync(strayDocs, { recursive: true, force: true });
+  log('已移除便携版目录里的自检截图（docs/），它属于测试产物');
+}
 
 const exePath = path.join(staging, 'electron.exe');
 if (!existsSync(exePath)) fail('运行时里没有 electron.exe');
@@ -242,7 +285,6 @@ try {
 }
 
 const exeFinal = path.join(outDir, `${APP_NAME}.exe`);
-const { readdirSync } = await import('node:fs');
 let totalBytes = 0;
 const walk = (dir) => {
   for (const e of readdirSync(dir, { withFileTypes: true })) {

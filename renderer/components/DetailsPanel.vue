@@ -20,7 +20,7 @@
  *
  * 但每调一个参数都实时给出「预计体积」，因为这是用户最关心的隐性目标。
  */
-import { computed, ref, watch } from 'vue';
+import { computed, onBeforeUnmount, ref, watch } from 'vue';
 import {
   CONVERSION_PRESETS,
   FPS_PRESETS,
@@ -321,6 +321,85 @@ const deviceDeviated = computed(() => {
   const uc = activeUseCase.value;
   if (!uc?.deviceId || uc.deviceId === 'any') return false;
   return options.value.deviceId !== uc.deviceId;
+});
+
+/* ------------------------------------------------------------------ *
+ * 单帧预览
+ *
+ * 参数一变就重算，但**防抖 400ms**：拖分辨率下拉、连点画面比例时不该每一下都起一个 ffmpeg。
+ * 只依赖"会影响画面的参数"（分辨率 / 画面比例 / 字幕烧录 / 裁剪起点），
+ * 把质量档位、编码器这些**不会改变构图**的排除在依赖外 —— 否则调音量也会重渲染预览。
+ *
+ * 预览**不反映编码质量**（无损 PNG），这一点在界面文案里也写明。
+ * ------------------------------------------------------------------ */
+const previewUrl = ref<string | null>(null);
+const previewBusy = ref(false);
+const previewError = ref<string | null>(null);
+const previewEffects = ref<string[]>([]);
+
+/** 预览用的"同一帧"时间点：与缩略图一致，两张图才可比 */
+const previewAtSec = computed(() => probe.value?.thumbnailAtSec ?? 0);
+
+const previewKey = computed(() => {
+  const p = probe.value;
+  if (!p) return '';
+  return [
+    p.path,
+    eff.value.resolutionId,
+    eff.value.fitMode ?? 'off',
+    String(eff.value.burnSubtitleIndex ?? ''),
+    String(eff.value.trimStartSec ?? ''),
+  ].join('|');
+});
+
+let previewTimer: ReturnType<typeof setTimeout> | null = null;
+let previewToken = 0;
+
+watch(
+  previewKey,
+  () => {
+    if (previewTimer) clearTimeout(previewTimer);
+    previewTimer = setTimeout(() => {
+      void renderPreviewFrame();
+    }, 400);
+  },
+  { immediate: true },
+);
+
+async function renderPreviewFrame(): Promise<void> {
+  const p = probe.value;
+  if (!p || !p.hasVideo) return;
+  const token = ++previewToken;
+  previewBusy.value = true;
+  previewError.value = null;
+  try {
+    const res = await window.converter.previewFrame(
+      p.path,
+      // 必须去掉响应式代理：IPC 结构化克隆不接受 Proxy（D-016 踩过这个坑）
+      JSON.parse(JSON.stringify(eff.value)) as ConversionOptions,
+      previewAtSec.value,
+    );
+    if (token !== previewToken) return; // 已经有更新的一次请求，丢弃这次结果
+    if (!res.ok) {
+      previewUrl.value = null;
+      previewError.value = res.error;
+      return;
+    }
+    previewUrl.value = res.data.filePath;
+    previewEffects.value = res.data.effects;
+    if (res.data.error) previewError.value = res.data.error;
+  } catch (err) {
+    if (token === previewToken) {
+      previewUrl.value = null;
+      previewError.value = err instanceof Error ? err.message : String(err);
+    }
+  } finally {
+    if (token === previewToken) previewBusy.value = false;
+  }
+}
+
+onBeforeUnmount(() => {
+  if (previewTimer) clearTimeout(previewTimer);
 });
 
 /** 专业参数里的容器/格式下拉：按分组列出全部预设 */
@@ -1214,6 +1293,34 @@ void VIDEO_CODECS;
             @update="setGlobal({ sizeLimitMb: $event })"
           />
         </div>
+
+        <!--
+          单帧预览（2026-09 新增，见 DECISIONS.md D-025）。
+          左「原图」右「效果」，两张图是**同一帧**（都取缩略图那个时间点），所以能直接比构图。
+          文案刻意写「画面效果」而不是「输出效果」：预览是无损 PNG，
+          它答不了"压到 2 Mbps 会不会糊"——那是「预计体积」的事。
+        -->
+        <div v-if="!isAudioOnly && activeFile?.thumbnail" class="preview-block">
+          <div class="preview-head">
+            <span class="field-label">画面效果预览</span>
+            <span v-if="previewBusy" class="muted">渲染中…</span>
+            <span v-else-if="previewError" class="muted preview-err">{{ previewError }}</span>
+            <span v-else-if="previewEffects.length" class="muted">{{
+              previewEffects.join(' · ')
+            }}</span>
+          </div>
+          <div class="preview-pair">
+            <figure class="preview-item">
+              <img :src="activeFile.thumbnail" alt="原图" />
+              <figcaption>原图</figcaption>
+            </figure>
+            <figure class="preview-item">
+              <img v-if="previewUrl" :src="previewUrl" alt="效果" />
+              <div v-else class="preview-placeholder">{{ previewBusy ? '…' : '—' }}</div>
+              <figcaption>效果（当前参数）</figcaption>
+            </figure>
+          </div>
+        </div>
       </section>
     </div>
 
@@ -1323,6 +1430,53 @@ void VIDEO_CODECS;
   display: flex;
   flex-direction: column;
   gap: 5px;
+}
+
+/* ---------- 单帧预览 ---------- */
+
+.preview-block {
+  margin-top: 12px;
+}
+.preview-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 8px;
+  font-size: 11.5px;
+}
+.preview-err {
+  color: var(--danger, #e5484d);
+}
+.preview-pair {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 10px;
+}
+.preview-item {
+  margin: 0;
+  min-width: 0;
+}
+.preview-item img,
+.preview-placeholder {
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  object-fit: contain;
+  background: var(--bg-base);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.preview-placeholder {
+  color: var(--text-muted);
+}
+.preview-item figcaption {
+  margin-top: 4px;
+  font-size: 11px;
+  color: var(--text-muted);
+  text-align: center;
 }
 
 /* ---------- 实际输出尺寸（修"选了 1080p 输出却没变"留下的） ---------- */

@@ -40,7 +40,11 @@ import path from 'node:path';
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const electronDist = path.join(root, 'node_modules', 'electron', 'dist');
 const outRoot = path.join(root, 'release');
-const outDir = path.join(outRoot, 'Lumen-conv-便携版');
+/*
+ * 精简版输出到**另一个目录**，不要覆盖完整版 —— 两者体积差 3 倍，
+ * 混在一起会让人以为"打包瘦身成功了，但怎么还是 600 MB"。
+ */
+const outDir = path.join(outRoot, process.argv.includes('--slim') ? 'Lumen-conv-精简版' : 'Lumen-conv-便携版');
 const staging = path.join(outRoot, '.staging');
 
 const APP_NAME = 'Lumen-conv';
@@ -61,14 +65,28 @@ function run(cmd, args, label) {
 
 /* ------------------------------ 前置检查 ------------------------------ */
 
+/**
+ * `--slim`：不内置 ffmpeg / ffprobe（2026-09 新增，见 DECISIONS.md D-025）。
+ *
+ * 为什么要做精简版：完整便携版 602 MB，其中 278 MB 是两个 ffmpeg 二进制。
+ * 对"只想先看看这个软件长什么样"的人来说，为了试一下下载 600 MB 太重；
+ * 而应用本身**已经**有"找不到 ffmpeg 时的引导"（顶部横幅 + 设置页诊断区 + 可手动指定路径），
+ * 所以精简版不是砍功能，而是把"自带"换成"你自己那份也能用"。
+ * 代价：首次运行必须指定 ffmpeg/ffprobe 路径，否则转换不可用。
+ */
+const slim = process.argv.includes('--slim');
+
 const pkg = JSON.parse(readFileSync(path.join(root, 'package.json'), 'utf8'));
 
 if (!existsSync(path.join(electronDist, 'electron.exe'))) {
   fail('未找到 Electron 运行时。请先执行：node scripts/fetch-binaries.mjs --electron');
 }
-for (const name of ['ffmpeg.exe', 'ffprobe.exe']) {
-  if (!existsSync(path.join(root, 'resources', 'bin', name))) {
-    fail(`未找到 resources/bin/${name}。请先执行：node scripts/fetch-binaries.mjs`);
+// 精简版不内置二进制，所以也不要求它们先下载好（它的卖点之一就是"不用下 278 MB"）
+if (!slim) {
+  for (const name of ['ffmpeg.exe', 'ffprobe.exe']) {
+    if (!existsSync(path.join(root, 'resources', 'bin', name))) {
+      fail(`未找到 resources/bin/${name}。请先执行：node scripts/fetch-binaries.mjs`);
+    }
   }
 }
 
@@ -163,16 +181,22 @@ if (existsSync(rcedit) && existsSync(icon)) {
   log('ℹ 未找到 rcedit 或 build/icon.ico，跳过 exe 内嵌图标');
 }
 
-/* ---- ffmpeg / ffprobe：放在 resources/bin，与开发态的查找路径一致 ---- */
+/* ---- ffmpeg / ffprobe：放在 resources/bin，与开发态的查找路径一致 ---- *
+ * `--slim` 时不内置（见文件前面的说明与 DECISIONS.md D-025）。
+ */
 const resDir = path.join(staging, 'resources');
 mkdirSync(path.join(resDir, 'bin'), { recursive: true });
-for (const name of ['ffmpeg.exe', 'ffprobe.exe']) {
-  cpSync(path.join(root, 'resources', 'bin', name), path.join(resDir, 'bin', name));
+if (slim) {
+  log('ℹ 精简版：不内置 ffmpeg / ffprobe（首次运行需在设置里指定路径，省下约 278 MB）');
+} else {
+  for (const name of ['ffmpeg.exe', 'ffprobe.exe']) {
+    cpSync(path.join(root, 'resources', 'bin', name), path.join(resDir, 'bin', name));
+  }
+  log(`已放入 ffmpeg / ffprobe（${(
+    (statSync(path.join(resDir, 'bin', 'ffmpeg.exe')).size +
+      statSync(path.join(resDir, 'bin', 'ffprobe.exe')).size) / 1048576
+  ).toFixed(1)} MB）`);
 }
-log(`已放入 ffmpeg / ffprobe（${(
-  (statSync(path.join(resDir, 'bin', 'ffmpeg.exe')).size +
-    statSync(path.join(resDir, 'bin', 'ffprobe.exe')).size) / 1048576
-).toFixed(1)} MB）`);
 
 /* ---- 应用代码打进 app.asar ---- */
 log('打包 app.asar …');
@@ -278,10 +302,16 @@ function createDesktopShortcut() {
 }
 
 log('');
-log('✔ 便携版已生成');
+log(slim ? '✔ 精简版已生成（未内置 ffmpeg）' : '✔ 便携版已生成');
 log(`  可执行文件：${path.relative(root, exeFinal)}`);
 log(`  目录总大小：${(totalBytes / 1048576).toFixed(1)} MB`);
-log(`  双击 ${APP_NAME}.exe 即可运行（无需安装、无需另装 ffmpeg）`);
+if (slim) {
+  log('  双击即可运行，但**首次需要指定 ffmpeg / ffprobe 路径**：');
+  log('    打开应用 → 顶部会有醒目提示 → 「设置 → 运行环境」→ 选择你已有的 ffmpeg.exe / ffprobe.exe');
+  log('  想省这一步就用完整版：npm run dist:portable（自带 ffmpeg，约 602 MB）');
+} else {
+  log(`  双击 ${APP_NAME}.exe 即可运行（无需安装、无需另装 ffmpeg）`);
+}
 
 if (process.argv.includes('--shortcut')) {
   createDesktopShortcut();

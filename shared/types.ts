@@ -330,6 +330,14 @@ export interface ConversionOptions {
   audioStreamIndexes: number[];
 }
 
+/** 单帧预览的结果 */
+export interface PreviewFrameResult {
+  filePath: string | null;
+  /** 这次套用了哪些效果（人话，界面直接显示） */
+  effects: string[];
+  error: string | null;
+}
+
 export interface CreateJobRequest {
   sourcePath: string;
   options: ConversionOptions;
@@ -433,6 +441,16 @@ export interface ConverterApi {
    */
   pathsForFiles(files: File[]): string[];
   thumbnail(path: string, atSec?: number): Promise<IpcResponse<ThumbnailResult>>;
+  /**
+   * 单帧预览：把当前参数（尺寸/画面比例/字幕烧录）套用在同一帧上，返回 PNG 路径。
+   * 与正式转换读同一份尺寸/字幕规则，所以预览里看到的构图就是产物的构图；
+   * 但它**不反映编码质量**（预览是无损 PNG）—— 界面文案也照这个界限写。
+   */
+  previewFrame(
+    path: string,
+    options: ConversionOptions,
+    atSec: number,
+  ): Promise<IpcResponse<PreviewFrameResult>>;
   getCapabilities(forceRefresh?: boolean): Promise<IpcResponse<SystemCapabilities>>;
   /** 指定目录所在磁盘的剩余字节数（开转前的磁盘空间预检用） */
   freeSpace(path: string): Promise<IpcResponse<number>>;

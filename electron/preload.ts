@@ -8,6 +8,7 @@
 import { contextBridge, ipcRenderer, webUtils } from 'electron';
 import type {
   AppSettings,
+  ConversionOptions,
   ConverterApi,
   CreateJobRequest,
   CreateJobResult,
@@ -15,6 +16,7 @@ import type {
   IpcResponse,
   MediaJob,
   MediaProbeResult,
+  PreviewFrameResult,
   SystemCapabilities,
   ThumbnailResult,
 } from '../shared/types';
@@ -54,6 +56,8 @@ const api: ConverterApi = {
     return out;
   },
   thumbnail: (p, atSec) => call<ThumbnailResult>('media:thumbnail', p, atSec),
+  previewFrame: (p: string, options: ConversionOptions, atSec: number) =>
+    call<PreviewFrameResult>('media:preview-frame', p, options, atSec),
   getCapabilities: (forceRefresh) =>
     call<SystemCapabilities>('capabilities:get', Boolean(forceRefresh)),
   detectFfmpeg: () => call<FfmpegDetectResult>('ffmpeg:detect'),

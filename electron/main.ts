@@ -16,12 +16,14 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import type {
   AppSettings,
+  ConversionOptions,
   CreateJobRequest,
   CreateJobResult,
   FfmpegDetectResult,
   IpcResponse,
   MediaJob,
   MediaProbeResult,
+  PreviewFrameResult,
   SystemCapabilities,
   ThumbnailResult,
 } from '../shared/types';
@@ -31,6 +33,7 @@ import { probeCapabilities, invalidateCapabilities } from './ffmpeg/capabilities
 import { ConversionEngine } from './ffmpeg/convert';
 import { exec } from './ffmpeg/process';
 import { probeMedia } from './ffmpeg/probe';
+import { renderPreview, sweepPreviewCache, clearPreviewCache } from './ffmpeg/preview';
 import { getThumbnail, clearThumbnailCache } from './ffmpeg/thumbnail';
 import { loadSettings, resetSettings, saveSettings } from './settings';
 
@@ -1049,6 +1052,86 @@ async function runSmokeCheck(): Promise<void> {
         ? `执行出错：${audioUi.error}`
         : `响度=${audioUi.hasLoudnorm} 增益=${audioUi.hasVolume} 声道=${audioUi.hasChannels}；切文件后仍为单声道=${audioUi.persistsAfterSwitch}`,
     ]);
+
+    /*
+     * 单帧预览（2026-09 新增，见 D-025）。
+     *
+     * 判据：左右两张图都在（原图 + 效果），且"效果"那张真的来自 ffmpeg（是 lumen-media URL）、
+     * 并且画面参数一变它**会重新渲染**（否则就是一个只渲染一次的摆设）。
+     */
+    const previewUi = await evalJs<{
+      hasPair: boolean;
+      leftSrc: string;
+      rightSrc: string;
+      effectsText: string;
+      changedAfterParam: boolean;
+      error: string;
+    }>(
+      '验证单帧预览',
+      `(async () => {
+        const tick = (ms) => new Promise((r) => setTimeout(r, ms));
+        const blank = { hasPair: false, leftSrc: '', rightSrc: '', effectsText: '', changedAfterParam: false, error: '' };
+        try {
+          const pair = document.querySelector('.preview-pair');
+          if (!pair) return { ...blank, error: '未找到预览区（应出现在「质量与尺寸」里）' };
+          const imgs = [...pair.querySelectorAll('img')];
+          const leftSrc = imgs[0]?.getAttribute('src') ?? '';
+          let rightSrc = imgs[1]?.getAttribute('src') ?? '';
+
+          // 预览是防抖 + 异步的，等它出图
+          for (let i = 0; i < 20 && !rightSrc; i++) {
+            await tick(400);
+            const now = [...pair.querySelectorAll('img')][1];
+            rightSrc = now?.getAttribute('src') ?? '';
+          }
+          const effectsText = (document.querySelector('.preview-head')?.textContent ?? '').replace(/\\s+/g, ' ').trim().slice(0, 70);
+
+          // 改画面比例 → 预览图 URL 应当变化（说明它真的重渲染，而不是渲一次就完事）
+          const fitSel = [...document.querySelectorAll('.quality-block select')].find((s) =>
+            [...s.options].some((o) => o.value === 'crop'),
+          );
+          let changedAfterParam = false;
+          if (fitSel) {
+            const padOpt = [...fitSel.options].find((o) => o.value === 'pad');
+            if (padOpt) {
+              fitSel.value = 'pad';
+              fitSel.dispatchEvent(new Event('change', { bubbles: true }));
+              for (let i = 0; i < 20; i++) {
+                await tick(400);
+                const now = [...document.querySelectorAll('.preview-pair img')][1]?.getAttribute('src') ?? '';
+                if (now && now !== rightSrc) {
+                  changedAfterParam = true;
+                  break;
+                }
+              }
+              // 复原
+              const offOpt = [...fitSel.options].find((o) => o.value === 'off');
+              fitSel.value = offOpt.value;
+              fitSel.dispatchEvent(new Event('change', { bubbles: true }));
+              await tick(600);
+            }
+          }
+
+          return { hasPair: true, leftSrc, rightSrc, effectsText, changedAfterParam, error: '' };
+        } catch (e) {
+          return { ...blank, error: String(e) };
+        }
+      })()`,
+    );
+    extraChecks.push(
+      [
+        '单帧预览：原图与「当前参数的效果图」并排显示（效果图由 ffmpeg 真实生成）',
+        previewUi.hasPair && previewUi.leftSrc.length > 0 && previewUi.rightSrc.includes('lumen-media'),
+        previewUi.error
+          ? `执行出错：${previewUi.error}`
+          : `原图=${previewUi.leftSrc.slice(0, 28)}… 效果=${previewUi.rightSrc.slice(0, 28)}…`,
+      ],
+      [
+        '单帧预览：画面参数一变就重新渲染（不是渲染一次就完事的摆设）',
+        previewUi.changedAfterParam,
+        previewUi.effectsText || '（未读到效果说明）',
+      ],
+    );
 
     /*
      * 字幕烧录（hardcode）—— 需要一个**带字幕**的素材，所以这里单独加载 subs-multi.mkv，
@@ -2734,7 +2817,35 @@ function registerIpc(): void {
 
   /* ---- 能力探测 ---- */
   handle<SystemCapabilities>('capabilities:get', async (forceRefresh?: boolean) => {
-    if (!ffmpegPath) throw new Error('找不到 ffmpeg，请到「设置」里指定路径');
+    /*
+     * 找不到 ffmpeg 时**返回一个"未就绪"的能力对象，而不是抛错**（2026-09 修，见 D-025）。
+     *
+     * 抛错的后果在精简版上暴露得很清楚：渲染进程拿不到 capabilities，
+     * 于是 `ffmpegMissing()` 这个判断（它要求 capabilities !== null）永远为假 ——
+     * 顶部那条"未找到 ffmpeg，去设置里指定"的引导横幅**根本不显示**，
+     * 标题栏的状态也永远停在"检测中…"。
+     * 结果就是：用户打开精简版，所有转换都点不动，而界面上没有任何解释。
+     *
+     * 这正好是需求 7"给人用"最不能接受的一种形态：功能不可用且不说原因。
+     * 现在改成如实返回"未就绪"，让界面能把话说清楚。
+     */
+    if (!ffmpegPath) {
+      const notReady: SystemCapabilities = {
+        ffmpegPath: null,
+        ffprobePath: null,
+        ffmpegVersion: null,
+        encoders: [],
+        probedAt: Date.now(),
+        ready: false,
+        diagnostics: [
+          '未找到 ffmpeg：本版本没有内置二进制（精简版），或内置文件被移动/删除。',
+          '请到「设置 → 运行环境」指定 ffmpeg.exe 与 ffprobe.exe 的路径。',
+          '也可以用完整版（自带 ffmpeg）：npm run dist:portable',
+        ],
+      };
+      mainWindow?.webContents.send('capabilities:updated', notReady);
+      return notReady;
+    }
     if (forceRefresh) {
       invalidateCapabilities();
       invalidateBinaryCache();
@@ -2789,7 +2900,11 @@ function registerIpc(): void {
     engine.setFfprobePath(ffprobePath);
     return settings;
   });
-  handle<number>('cache:clear-thumbnails', () => clearThumbnailCache());
+  // 「清理缓存」把缩略图与预览图一起清掉：两者都是可再生的临时产物，分开清只会让人困惑
+  handle<number>('cache:clear-thumbnails', async () => {
+    const thumbs = await clearThumbnailCache();
+    return thumbs + clearPreviewCache();
+  });
 
   /* ---- 任务 ---- */
   handle<CreateJobResult[]>('jobs:create', (requests: CreateJobRequest[]) => engine.createJobs(requests));
@@ -2802,6 +2917,29 @@ function registerIpc(): void {
   handle<boolean>('jobs:resume-queue', () => engine.resumeQueue());
   handle<boolean>('jobs:move', (id: string, direction: 'up' | 'down' | 'top') =>
     engine.moveJob(id, direction),
+  );
+
+  /* ---------------- 单帧预览（改了参数会变成什么样） ---------------- */
+
+  handle<PreviewFrameResult>(
+    'media:preview-frame',
+    async (filePath: string, options: ConversionOptions, atSec: number) => {
+      const probe = await probeMedia(filePath, { ffprobePath: requireFfprobe() });
+      const ffmpeg = requireFfmpeg();
+      /* 抽帧时间点与缩略图一致：左右两张图必须是**同一帧**，对比才有意义 */
+      const at = atSec > 0 ? atSec : probe.thumbnailAtSec || Math.min(1, probe.durationSec / 2);
+      const res = await renderPreview(probe, options, at, ffmpeg);
+      /*
+       * 顺手清掉过期预览图。
+       * 每次渲染都生成新文件（旧的可能正被界面引用，不能覆盖同名），不清理会无限增长：
+       * 实测一轮自检就留 5 张。正常使用中界面只引用刚生成的那张。
+       */
+      sweepPreviewCache();
+      if (!res.ok || !res.filePath) {
+        return { filePath: null, effects: res.effects, error: res.error };
+      }
+      return { filePath: toMediaUrl(res.filePath), effects: res.effects, error: null };
+    },
   );
 
   /*

@@ -272,13 +272,15 @@ export function effectiveOptions(file: LoadedFile): ConversionOptions {
   return JSON.parse(JSON.stringify(merged)) as ConversionOptions;
 }
 
-/** 把当前选中的文件加入转换队列 */
+/** 把文件加入转换队列；传入 paths 时只处理这些（用于"只转勾选的"） */
 export async function startConversion(paths?: string[]): Promise<number> {
   const targets = paths
-    ? files.value.filter((f) => paths.includes(f.path))
+    ? // 显式指定时也要过滤掉尚未分析完 / 分析失败的文件，
+      // 否则会拿着没有 probe 结果的文件去建任务
+      files.value.filter((f) => paths.includes(f.path) && f.status === 'ready')
     : files.value.filter((f) => f.status === 'ready');
   if (targets.length === 0) {
-    showToast('没有可转换的文件', 'danger');
+    showToast(paths && paths.length > 0 ? '勾选的文件都还没分析完或无法读取' : '没有可转换的文件', 'danger');
     return 0;
   }
 

@@ -109,6 +109,8 @@ async function loadModules() {
     commands: 'electron/ffmpeg/commands.ts',
     progress: 'electron/ffmpeg/progress.ts',
     errors: 'electron/ffmpeg/errors.ts',
+    // 批量/并发调度是「一次选多个文件」的核心，必须用真实的引擎代码来测
+    engine: 'electron/ffmpeg/convert.ts',
   };
 
   const built = {};
@@ -630,6 +632,162 @@ async function main() {
     const { bytes } = await runBuilt(b, out);
     assert(bytes < src * 2, `输出 ${bytes} 与源 ${src} 相比不合理`);
     return `${(src / 1024).toFixed(0)} KB → ${(bytes / 1024).toFixed(0)} KB（${((bytes / src) * 100).toFixed(0)}%）`;
+  });
+
+  /* ---- 批量（一次选多个文件） ---- */
+  group('需求 2 · 批量转换（一次选多个文件）');
+
+  /*
+   * 这一组用**真实的 ConversionEngine**（不是另写一套调度）来验证批量路径：
+   * 队列、并发、输出路径分配、状态流转都走产品代码。
+   *
+   * 起因：用户问"可以一次性选择多个文件进行解码吗"。功能本身是有的
+   * （文件对话框 multiSelections + 拖拽多选 + 「开始转换（N 个）」），
+   * 但此前**没有任何自动化用例覆盖批量路径** —— 单文件全绿不代表批量也对。
+   */
+  await checkAsync('批量入队 3 个文件并全部转换完成', async () => {
+    const engine = new mods.engine.ConversionEngine();
+    engine.setFfmpegPath(FFMPEG);
+    engine.setFfprobePath(FFPROBE);
+    engine.setConcurrency(2); // 故意小于任务数，用来验证排队与并发调度
+
+    const sources = [sampleMp4, sampleMp4, existsSync(sampleHevc) ? sampleHevc : sampleMp4];
+    const requests = sources.map((src, i) => ({
+      sourcePath: src,
+      options: {
+        ...baseOptions,
+        presetId: 'mp4-compatible',
+        videoCodecId: 'h264',
+        audioCodecId: 'aac',
+        qualityId: 'tiny',
+        resolutionId: '360p',
+        fileNameTemplate: `batch-${i}-{name}`,
+      },
+    }));
+
+    const created = await engine.createJobs(requests);
+    const ok = created.filter((r) => r.job);
+    assert(ok.length === 3, `应有 3 个任务入队，实际 ${ok.length}（错误：${created.map((r) => r.error).filter(Boolean).join('; ')}）`);
+
+    // 等全部进入终态
+    const deadline = Date.now() + 180_000;
+    for (;;) {
+      const list = engine.list();
+      const settled = list.every((j) => ['done', 'failed', 'canceled'].includes(j.state));
+      if (settled || Date.now() > deadline) break;
+      await new Promise((r) => setTimeout(r, 300));
+    }
+
+    const list = engine.list();
+    const failed = list.filter((j) => j.state !== 'done');
+    assert(failed.length === 0, `${failed.length} 个任务未成功：${failed.map((j) => `${j.sourceName}=${j.state}(${j.error?.message ?? ''})`).join('; ')}`);
+
+    // 输出路径必须互不相同（并发写同一个文件会互相破坏）
+    const outs = list.map((j) => j.outputPath);
+    const uniq = new Set(outs);
+    assert(uniq.size === outs.length, `输出路径出现重复：${outs.join(' | ')}`);
+
+    // 每个产物都要真实存在且不是空文件
+    for (const j of list) {
+      assert(existsSync(j.outputPath), `产物不存在：${j.outputPath}`);
+      assert(statSync(j.outputPath).size > 1024, `产物过小：${j.outputPath}`);
+    }
+
+    // 进度必须都走到 100%
+    const badProgress = list.filter((j) => j.progress?.percent !== 100);
+    assert(badProgress.length === 0, `${badProgress.length} 个任务进度未到 100%`);
+
+    return `${list.length} 个任务全部完成，产物 ${list.map((j) => (statSync(j.outputPath).size / 1024).toFixed(0)).join('/')} KB`;
+  });
+
+  await checkAsync('批量任务的文件名模板按序号区分', async () => {
+    /*
+     * 先按前缀清掉所有历史产物。
+     *
+     * 注意目录：baseOptions.outputDir 是 OUTPUT（test-assets/output），不是 SAMPLES。
+     * 一开始清错了目录，导致产物一直残留、名字逐次递增到 (15)。
+     *
+     * 另外只删精确文件名也不够：应用的「自动改名避免覆盖」会生成
+     * `tpl-0-sample-h264 (1).mp4` 这类名字，必须按前缀整体清理。
+     */
+    const prefixCleanup = async () => {
+      for (const dir of [OUTPUT, SAMPLES]) {
+        let names = [];
+        try {
+          names = await fsp.readdir(dir);
+        } catch {
+          continue;
+        }
+        for (const name of names) {
+          if (/^tpl-\d+-/.test(name)) {
+            await fsp.rm(path.join(dir, name), { force: true });
+          }
+        }
+      }
+    };
+    await prefixCleanup();
+
+    const engine = new mods.engine.ConversionEngine();
+    engine.setFfmpegPath(FFMPEG);
+    engine.setFfprobePath(FFPROBE);
+
+    // 逐个创建：每个任务创建前都再清一次，确保"决定输出路径"的那一刻目录是干净的。
+    // 一次传两个文件时是并发决定路径的，任何一个残留都会让名字带上 (N) 后缀，
+    // 使断言结果随上一次运行漂移（实测 (8)(9)(10)(11) 逐次递增）。
+    const created = [];
+    for (const i of [0, 1]) {
+      await prefixCleanup();
+      const [r] = await engine.createJobs([
+        {
+          sourcePath: sampleMp4,
+          options: {
+            ...baseOptions,
+            presetId: 'mp4-compatible',
+            videoCodecId: 'copy',
+            audioCodecId: 'copy',
+            fileNameTemplate: `tpl-${i}-{name}`,
+          },
+        },
+      ]);
+      created.push(r);
+    }
+
+    const names = created.filter((r) => r.job).map((r) => path.basename(r.job.outputPath));
+    assert(names.length === 2, `应有 2 个任务，实际 ${names.length}（${created.map((r) => r.error).filter(Boolean).join('; ')}）`);
+    assert(names[0] !== names[1], `两个任务输出了同一个文件名：${names[0]}`);
+    assert(
+      names.every((n) => n.startsWith('tpl-')),
+      `模板未生效：${names.join(', ')}`,
+    );
+    // 断言模板变量真的被替换（而不是原样留下 {name}）
+    assert(
+      names.every((n) => n.includes('sample-h264')),
+      `{name} 变量未被替换：${names.join(', ')}`,
+    );
+    // 起点干净时不应触发自动改名；触发说明清理没做到位（而不是产品有问题）
+    assert(
+      names.every((n) => !n.includes(' (')),
+      `出现自动改名后缀，说明起点仍有残留：${names.join(', ')}`,
+    );
+
+    /*
+     * 先取消、等任务真正结束，再清理产物。
+     *
+     * 顺序很重要：如果先清理再取消，运行中的任务会在清理之后继续写盘，
+     * 于是文件残留到下一次运行，触发自动改名，结果逐次递增（实测 (5)(6)(7)）。
+     */
+    for (const j of engine.list()) engine.cancel(j.id);
+    const settleDeadline = Date.now() + 15_000;
+    for (;;) {
+      const all = engine.list();
+      if (all.every((j) => ['done', 'failed', 'canceled'].includes(j.state))) break;
+      if (Date.now() > settleDeadline) break;
+      await new Promise((r) => setTimeout(r, 200));
+    }
+    await new Promise((r) => setTimeout(r, 300));
+    await prefixCleanup();
+
+    return names.join(' / ');
   });
 
   /* ---- 错误诊断 ---- */

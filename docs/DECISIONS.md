@@ -634,7 +634,7 @@
 - **安装包形态尚未验证，便携版形态已验证**：NSIS 安装包在本机受限网络下做不出来（原因见 D-017），
   所以"extraResources 在**安装后**确实能释放出可执行的 ffmpeg"仍只是配置与代码层面的推断；
   但 `release/Lumen-conv-便携版/resources/bin/` 这个**相同布局**已经实机跑通
-  （便携版自检 40/40 通过、退出码 0，见 `docs/SESSION_SUMMARY.md` 第 4.1.1 节）。
+  （便携版自检 44/44 通过、退出码 0，见 `docs/SESSION_SUMMARY.md` 第 4.1.1 节）。
 
 ---
 
@@ -739,7 +739,7 @@ export function effectiveOptions(file: LoadedFile): ConversionOptions {
 2. **当前结构正好落在 JSON 的能力范围内**：`ConversionOptions` 的 14 个字段只有
    `string` / `number` / `boolean` / `null` 与 `number[]` 这几种形态（见 `shared/types.ts`），
    JSON 往返是无损的。
-3. **错误的传播方式已验证**：修复后 `npm run smoke:ui:full` **40/40 通过、退出码 0**，
+3. **错误的传播方式已验证**：修复后 `npm run smoke:ui:full` **44/44 通过、退出码 0**，
    控制台不再出现任何 `An object could not be cloned.`；同时 `startConversion()` 补了
    `try/catch` + `showToast('无法创建转换任务：' + msg, 'danger', 8000)`，
    这类错误以后不会再静默。
@@ -796,7 +796,7 @@ electron-builder 配置**与 `npm run dist:nsis` 入口，供有网络的环境�
    出错时行为可预期（例如 rename 被占用就回退为复制，见下）。
 3. **产物形态正好与代码约定一致**：`resources/bin/ffmpeg.exe` 这个位置**同时满足开发态与打包态的查找路径**
    （`binaries.ts` 的 `bundledCandidates()`），因此 `binaries.ts` **一行都不用改**（见 D-014）。
-4. **实测有效**：便携版实跑 `--smoke --smoke-file=… --smoke-convert` **40/40 通过、退出码 0**
+4. **实测有效**：便携版实跑 `--smoke --smoke-file=… --smoke-convert` **44/44 通过、退出码 0**
    （含应用内真实转换：`done`、产物 706 KB、进度 100%）。
 
 **代价 / 权衡（必须写清楚）**

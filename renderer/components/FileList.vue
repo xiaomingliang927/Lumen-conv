@@ -42,6 +42,45 @@ async function onDrop(e: DragEvent): Promise<void> {
 const totalSize = computed(() => files.value.reduce((sum, f) => sum + (f.probe?.sizeBytes ?? 0), 0));
 const readyCount = computed(() => files.value.filter((f) => f.status === 'ready').length);
 
+/**
+ * 勾选状态：把"要转哪些文件"变成显式选择。
+ *
+ * 起因：用户问"可以一次性选择多个文件进行解码吗"。一次选多个文件本身是支持的
+ * （对话框多选 / 拖入多个 / 「开始转换（N 个）」），但**没办法挑选**——
+ * 要么全转，要么先把不想转的逐个删掉。文件一多这就很难用。
+ *
+ * 语义：默认「未勾选任何文件 = 转换全部可转换文件」，保持原来的快捷路径；
+ * 一旦勾选了文件，就只转勾选的那些。这样既支持"一键全转"，也支持"挑几个转"。
+ */
+const selected = ref<Set<string>>(new Set());
+
+const selectedCount = computed(() => files.value.filter((f) => selected.value.has(f.path) && f.status === 'ready').length);
+const allReadySelected = computed(
+  () => readyCount.value > 0 && selectedCount.value === readyCount.value,
+);
+
+/** 实际会被提交转换的文件数 */
+const willConvertCount = computed(() => (selected.value.size > 0 ? selectedCount.value : readyCount.value));
+
+function isSelected(file: LoadedFile): boolean {
+  return selected.value.has(file.path);
+}
+
+function toggleSelect(path: string): void {
+  const next = new Set(selected.value);
+  if (next.has(path)) next.delete(path);
+  else next.add(path);
+  selected.value = next;
+}
+
+function selectAll(): void {
+  selected.value = new Set(files.value.filter((f) => f.status === 'ready').map((f) => f.path));
+}
+
+function selectNone(): void {
+  selected.value = new Set();
+}
+
 function statusChip(file: LoadedFile): { text: string; cls: string } | null {
   if (file.status === 'analyzing') return { text: '分析中', cls: 'chip-info' };
   if (file.status === 'error') return { text: '无法读取', cls: 'chip-danger' };
@@ -49,10 +88,15 @@ function statusChip(file: LoadedFile): { text: string; cls: string } | null {
 }
 
 const busy = ref(false);
+
+/** 转换：勾选过就只转勾选的，否则转全部可转换文件 */
 async function convertAll(): Promise<void> {
   busy.value = true;
   try {
-    await startConversion();
+    const paths = selected.value.size > 0 ? [...selected.value] : undefined;
+    const n = await startConversion(paths);
+    // 提交成功的那些从勾选集合里移除，避免"转完了还显示勾着"
+    if (n > 0 && selected.value.size > 0) selected.value = new Set();
   } finally {
     busy.value = false;
   }
@@ -75,8 +119,17 @@ void stateLabel;
         <span v-if="files.length" class="chip">
           {{ files.length }} 个 · {{ formatBytes(totalSize) }}
         </span>
+        <span v-if="selected.size > 0" class="chip chip-accent">已选 {{ selectedCount }}</span>
       </div>
       <div class="pane-actions">
+        <button
+          v-if="files.length > 1"
+          class="btn btn-sm btn-ghost"
+          :title="allReadySelected ? '取消全选' : '选中全部可转换文件'"
+          @click="allReadySelected ? selectNone() : selectAll()"
+        >
+          {{ allReadySelected ? '取消全选' : '全选' }}
+        </button>
         <button class="btn btn-sm btn-ghost" :disabled="files.length === 0" @click="clearFiles">清空</button>
         <button class="btn btn-sm" @click="emit('pick')">添加文件</button>
       </div>
@@ -98,9 +151,22 @@ void stateLabel;
         v-for="file in files"
         :key="file.path"
         class="file-card"
-        :class="{ active: file.path === activePath, error: file.status === 'error' }"
+        :class="{ active: file.path === activePath, error: file.status === 'error', picked: isSelected(file) }"
         @click="activePath = file.path"
       >
+        <!-- 勾选框：只有分析成功的文件才可选，分析中/失败的点不动 -->
+        <label
+          class="pick-box"
+          :title="file.status === 'ready' ? '勾选后「开始转换」只转勾选的文件' : '该文件不可转换'"
+          @click.stop
+        >
+          <input
+            type="checkbox"
+            :checked="isSelected(file)"
+            :disabled="file.status !== 'ready'"
+            @change="toggleSelect(file.path)"
+          />
+        </label>
         <div class="thumb">
           <img v-if="file.thumbnail" :src="file.thumbnail" :alt="file.probe?.fileName ?? ''" />
           <div v-else-if="file.status === 'analyzing'" class="thumb-skeleton" />
@@ -153,12 +219,18 @@ void stateLabel;
     </div>
 
     <footer v-if="files.length > 0" class="pane-footer">
-      <span class="muted">{{ readyCount }} 个可转换</span>
-      <button class="btn btn-primary" :disabled="readyCount === 0 || busy" @click="convertAll">
+      <span class="foot-summary">
+        <span class="muted">{{ readyCount }} 个可转换</span>
+        <!-- 勾选态单独成元素：既方便用户看清，也便于自动化断言（相邻插值会带空白） -->
+        <span v-if="selected.size > 0" class="chip chip-accent foot-picked">
+          已勾选 {{ selectedCount }} 个
+        </span>
+      </span>
+      <button class="btn btn-primary" :disabled="willConvertCount === 0 || busy" @click="convertAll">
         <svg viewBox="0 0 16 16" width="13" height="13">
           <path d="M5 3.5 12 8l-7 4.5v-9Z" fill="currentColor" />
         </svg>
-        开始转换{{ readyCount > 1 ? `（${readyCount} 个）` : '' }}
+        开始转换{{ willConvertCount > 1 ? `（${willConvertCount} 个）` : '' }}
       </button>
     </footer>
 
@@ -249,6 +321,29 @@ void stateLabel;
 }
 .file-card.error {
   border-color: rgba(242, 86, 77, 0.3);
+}
+.file-card.picked {
+  border-color: var(--accent);
+  background: var(--accent-dim);
+}
+
+.pick-box {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  cursor: pointer;
+}
+.pick-box input[type='checkbox'] {
+  width: 15px;
+  height: 15px;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+.pick-box input:disabled {
+  cursor: not-allowed;
+  opacity: 0.35;
 }
 
 .thumb {
@@ -360,6 +455,18 @@ void stateLabel;
   padding: 10px 14px;
   border-top: 1px solid var(--border-subtle);
   background: var(--bg-panel);
+  gap: 10px;
+}
+
+.foot-summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.foot-picked {
+  flex: none;
 }
 
 .drop-overlay {

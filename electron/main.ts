@@ -549,6 +549,85 @@ async function runSmokeCheck(): Promise<void> {
       ]);
 
       /*
+       * 勾选（多选要转哪些文件）的验证。
+       *
+       * 起因：用户问"可以一次性选择多个文件进行解码吗"。一次选多个文件本来就支持，
+       * 但原先**没法挑选**——要么全转、要么先把不想转的逐个删掉。
+       * 这里验证勾选语义：勾了 1 个 → 按钮计数变成 1；全选 → 变成总数。
+       */
+      const pickState = await evalJs<{
+        boxes: number;
+        footerBefore: string;
+        footerAfterPick: string;
+        footerAfterAll: string;
+        hasSelectAll: boolean;
+        diag: string;
+      }>(
+        '验证文件勾选与按钮计数联动',
+        `(async () => {
+          const picked = () => (document.querySelector('.foot-picked')?.textContent ?? '').trim();
+          const btn = () => (document.querySelector('.pane-footer .btn-primary')?.textContent ?? '').trim();
+          const tick = () => new Promise((r) => setTimeout(r, 120));
+          const boxes = [...document.querySelectorAll('.pick-box input')];
+          const footerBefore = '无勾选 | ' + btn();
+          if (boxes.length === 0) {
+            return { boxes: 0, footerBefore, footerAfterPick: '', footerAfterAll: '', hasSelectAll: false, diag: '没有勾选框' };
+          }
+          // 显式派发 change：只调 click() 在部分情况下不会触发 Vue 监听的 change 事件
+          const box = boxes[0];
+          const before = box.checked;
+          box.checked = true;
+          box.dispatchEvent(new Event('change', { bubbles: true }));
+          await tick();
+          const footerAfterPick = picked() + ' | ' + btn();
+          const selectAll = [...document.querySelectorAll('.pane-actions .btn')].find(
+            (b) => (b.textContent ?? '').includes('全选')
+          );
+          if (selectAll) selectAll.click();
+          await tick();
+          const footerAfterAll = picked() + ' | ' + btn();
+          return {
+            boxes: boxes.length,
+            footerBefore,
+            footerAfterPick,
+            footerAfterAll,
+            hasSelectAll: Boolean(selectAll),
+            diag: 'beforeChecked=' + before + ' afterDomChecked=' + box.checked,
+          };
+        })()`,
+      );
+      extraChecks.push(
+        [
+          '文件列表：每个文件都有勾选框',
+          pickState.boxes >= 2,
+          `${pickState.boxes} 个勾选框`,
+        ],
+        [
+          '文件列表：勾选后按钮计数联动',
+          pickState.footerAfterPick.includes('已勾选 1'),
+          `${pickState.footerBefore} → ${pickState.footerAfterPick}（${pickState.diag}）`,
+        ],
+        [
+          '文件列表：提供全选入口',
+          pickState.hasSelectAll && pickState.footerAfterAll.includes('已勾选 2'),
+          pickState.footerAfterAll || '未找到全选按钮',
+        ],
+      );
+      // 取消勾选，避免影响后续"点击开始转换"用例的预期（那里期望转全部）
+      await evalJs<boolean>(
+        '取消全部勾选',
+        `(async () => {
+          const selectNone = [...document.querySelectorAll('.pane-actions .btn')].find(
+            (b) => (b.textContent ?? '').includes('取消全选')
+          );
+          if (selectNone) selectNone.click();
+          await new Promise((r) => setTimeout(r, 120));
+          return true;
+        })()`,
+      );
+      await shotDelay(200);
+
+      /*
        * 质量下拉框的交互验证。
        *
        * 起因：用户问"这个（质量下拉）是可以用的吗"。查下来发现更严重的问题——
@@ -676,6 +755,39 @@ async function runSmokeCheck(): Promise<void> {
       const beforeClick = engine.list().length;
 
       /*
+       * 勾选语义的最终验证：先只勾选「第 2 个文件」，然后点「开始转换」，
+       * 断言引擎里实际产生的任务**只有那一个文件**。
+       *
+       * 前面的界面断言只证明"勾选计数会联动"，这一步才证明"勾选真的限制了转换范围"，
+       * 也就是用户真正关心的那句话：我能不能挑着转。
+       */
+      const pickedFileName = await evalJs<{ name: string; total: number }>(
+        '只勾选第 2 个文件',
+        `(async () => {
+          const boxes = [...document.querySelectorAll('.pick-box input')];
+          const pick = (sel) => {
+            const b = [...document.querySelectorAll('.pane-actions .btn')].find(
+              (x) => (x.textContent ?? '').includes(sel)
+            );
+            if (b) b.click();
+          };
+          pick('取消全选');
+          await new Promise((r) => setTimeout(r, 120));
+          const box = boxes[1] ?? boxes[0];
+          box.checked = true;
+          box.dispatchEvent(new Event('change', { bubbles: true }));
+          await new Promise((r) => setTimeout(r, 150));
+          const cards = [...document.querySelectorAll('.file-card')];
+          const idx = boxes.indexOf(box);
+          return {
+            name: (cards[idx]?.querySelector('.file-name')?.textContent ?? '').trim(),
+            total: boxes.length,
+          };
+        })()`,
+      );
+      await shotDelay(200);
+
+      /*
        * 在点击之前，先把质量下拉切到「极小体积」，然后断言生成的任务命令里
        * 确实带上了对应的 CRF（34，见 shared/presets.ts 的 QUALITY_PRESETS）。
        *
@@ -725,6 +837,16 @@ async function runSmokeCheck(): Promise<void> {
         '应用内转换：按钮点击真的创建了任务',
         enqueued,
         `点击前后队列长度 ${beforeClick} → ${engine.list().length}`,
+      ]);
+
+      // 勾选限制转换范围：只勾了 1 个文件，队列里就应该只有 1 个任务，且是该文件
+      const jobsAfterClick = engine.list();
+      const onlyPicked =
+        jobsAfterClick.length === 1 && jobsAfterClick[0].sourceName === pickedFileName.name;
+      extraChecks.push([
+        '勾选后「开始转换」只转勾选的文件',
+        onlyPicked,
+        `共 ${pickedFileName.total} 个文件，只勾选「${pickedFileName.name}」→ 队列 ${jobsAfterClick.length} 个任务（${jobsAfterClick.map((j) => j.sourceName).join(', ')}）`,
       ]);
 
       // 把"界面上的质量选择"与"真实执行的 ffmpeg 命令"对上。

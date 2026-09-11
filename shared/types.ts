@@ -338,6 +338,13 @@ export interface AppSettings {
   notifyOnFinish: boolean;
   /** 完成后打开输出目录 */
   openFolderOnFinish: boolean;
+  /**
+   * 界面模式：
+   *   recommended —— 推荐（默认）：只需选用途，专业参数全部隐藏
+   *   custom      —— 自定义：展开全部参数，适合专业用户
+   * 持久化保存，避免专业用户每次启动都要重新展开。
+   */
+  appMode: 'recommended' | 'custom';
 }
 
 export const DEFAULT_SETTINGS: AppSettings = {
@@ -348,6 +355,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   theme: 'system',
   notifyOnFinish: true,
   openFolderOnFinish: false,
+  appMode: 'recommended',
 };
 
 /* ------------------------------------------------------------------ *

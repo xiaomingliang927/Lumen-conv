@@ -55,6 +55,8 @@ function normalize(s: AppSettings): AppSettings {
     ...s,
     concurrency: Math.max(1, Math.min(4, Math.round(Number(s.concurrency) || 1))),
     theme: ['system', 'light', 'dark'].includes(s.theme) ? s.theme : 'system',
+    // 旧版本设置文件里没有这个字段，缺省按「推荐」处理
+    appMode: s.appMode === 'custom' ? 'custom' : 'recommended',
     ffmpegPath: validPathOrNull(s.ffmpegPath),
     ffprobePath: validPathOrNull(s.ffprobePath),
     defaultOutputDir: validPathOrNull(s.defaultOutputDir),

@@ -198,6 +198,17 @@ async function runSmokeCheck(): Promise<void> {
     );
   }
 
+  /*
+   * 界面偏好已在 app.whenReady() 里、**创建窗口之前**重置成推荐模式 + 跟随系统主题，
+   * 这里只做校验（与"遗留任务"同一个道理：放到窗口加载后再改会与渲染进程
+   * initStore() 构成竞态 —— 实测就是这样：磁盘上已是 recommended，
+   * 而渲染层读到的还是上一轮的 custom）。
+   */
+  const effectiveSettings = await loadSettings();
+  if (effectiveSettings.appMode !== 'recommended') {
+    console.warn(`[smoke] ⚠ appMode 仍为 ${effectiveSettings.appMode}，模式相关断言可能不成立`);
+  }
+
   // 等待界面骨架挂载 + store 数据加载完成。
   // 只看 DOM 元素是否存在是不够的：设置页依赖 settings 数据，
   // 数据未就绪时 v-if 会让整块内容不渲染，截出来是一张空白页。
@@ -535,6 +546,124 @@ async function runSmokeCheck(): Promise<void> {
     await shotDelay(300);
 
     /*
+     * 模式切换：推荐（大众）/ 自定义（专业）。
+     *
+     * 起因：用户反馈"很奇怪" —— 原来把用途卡片和一大堆专业参数堆在同一个面板里，
+     * 大众用户被淹没。现在分两个模式：推荐模式隐藏全部专业参数，自定义模式才展开。
+     * 这里验证：① 推荐模式下没有高级选项；② 切到自定义后出现；
+     * ③ 模式选择会持久化（settings.appMode）。
+     */
+    const modeSwitch = await evalJs<{
+      storedMode: string;
+      activeBtn: string;
+      recommendedHasAdvanced: boolean;
+      recommendedHasModeBtn: boolean;
+      customHasAdvanced: boolean;
+      backToRecommended: boolean;
+      error: string;
+    }>(
+      '验证推荐 / 自定义模式切换',
+      `(async () => {
+        const tick = () => new Promise((r) => setTimeout(r, 300));
+        const advShown = () => Boolean(document.querySelector('.advanced-toggle'));
+        const activeBtn = () =>
+          (document.querySelector('.mode-btn.active')?.textContent ?? '').replace(/\\s+/g, ' ').trim().slice(0, 12);
+        const clickMode = (idx) => {
+          const btns = [...document.querySelectorAll('.mode-btn')];
+          if (!btns[idx]) return false;
+          btns[idx].click();
+          return true;
+        };
+        try {
+          // 诊断：确认自检开头的重置是否真的生效（看渲染进程读到的 appMode）
+          const s = await window.converter.getSettings();
+          const storedMode = s.ok ? String(s.data.appMode) : 'ERR';
+          const recommendedHasModeBtn = document.querySelectorAll('.mode-btn').length === 2;
+          // 模式切换会触发 Vue 更新，多等一拍再判定（早期只等一次，读到的是旧 DOM）
+          await tick();
+          const recommendedHasAdvanced = advShown();
+
+          // 切到自定义
+          clickMode(1);
+          await tick();
+          await tick();
+          const customHasAdvanced = advShown();
+
+          // 切回推荐
+          clickMode(0);
+          await tick();
+          const backToRecommended = !advShown();
+
+          return {
+            storedMode,
+            activeBtn: activeBtn(),
+            recommendedHasAdvanced,
+            recommendedHasModeBtn,
+            customHasAdvanced,
+            backToRecommended,
+            error: '',
+          };
+        } catch (e) {
+          return { storedMode: '', activeBtn: '', recommendedHasAdvanced: true, recommendedHasModeBtn: false, customHasAdvanced: false, backToRecommended: false, error: String(e) };
+        }
+      })()`,
+    );
+
+    extraChecks.push(
+      [
+        '模式切换：提供「推荐设置 / 自定义」两个模式',
+        modeSwitch.recommendedHasModeBtn,
+        modeSwitch.recommendedHasModeBtn ? '两个模式按钮都在' : '未找到模式切换',
+      ],
+      [
+        '推荐模式：隐藏全部专业参数（大众用户不被淹没）',
+        !modeSwitch.recommendedHasAdvanced,
+        modeSwitch.recommendedHasAdvanced
+          ? `推荐模式下仍出现「高级选项」（存储值=${modeSwitch.storedMode}，高亮=${modeSwitch.activeBtn}）`
+          : '推荐模式下无高级选项',
+      ],
+      [
+        '自定义模式：展开专业参数',
+        modeSwitch.customHasAdvanced,
+        modeSwitch.customHasAdvanced ? '出现「高级选项」' : '切到自定义后仍无高级选项',
+      ],
+      [
+        '切回推荐模式：专业参数重新隐藏',
+        modeSwitch.backToRecommended,
+        modeSwitch.backToRecommended ? '已隐藏' : '仍显示',
+      ],
+    );
+
+    // 后面几组断言针对专业参数（编码器 / 格式下拉 / 命名下拉），必须先在自定义模式
+    const enteredCustom = await evalJs<{ ok: boolean; activeBtn: string; hasAdvanced: boolean }>(
+      '切到自定义模式以验证专业参数',
+      `(async () => {
+        const btns = [...document.querySelectorAll('.mode-btn')];
+        if (btns[1]) btns[1].click();
+        await new Promise((r) => setTimeout(r, 400));
+        let adv = document.querySelector('.advanced-toggle');
+        if (adv && !document.querySelector('.advanced-body')) {
+          adv.click();
+          await new Promise((r) => setTimeout(r, 320));
+        }
+        adv = document.querySelector('.advanced-toggle');
+        return {
+          ok: Boolean(document.querySelector('.advanced-body')),
+          activeBtn: (document.querySelector('.mode-btn.active')?.textContent ?? '').replace(/\\s+/g, ' ').trim().slice(0, 10),
+          hasAdvanced: Boolean(adv),
+        };
+      })()`,
+    );
+    extraChecks.push([
+      '自检前置：能进入自定义模式并展开专业参数',
+      enteredCustom.ok,
+      enteredCustom.ok
+        ? `当前高亮「${enteredCustom.activeBtn}」`
+        : `未能进入（高亮=${enteredCustom.activeBtn}，有高级选项入口=${enteredCustom.hasAdvanced}）`,
+    ]);
+    await shotDelay(300);
+
+    /*
      * 兼容性预检的端到端验证：真的做一个"会播不了"的组合出来。
      *
      * 场景：源是 H.264，用户手动把编码器改成 H.265、设备选「老安卓电视」。
@@ -571,11 +700,17 @@ async function runSmokeCheck(): Promise<void> {
 
           // 1) 打开高级选项（编码器在里面）
           const adv = document.querySelector('.advanced-toggle');
-          if (adv) adv.click();
+          if (adv && !document.querySelector('.advanced-body')) adv.click();
           await tick();
 
-          // 2) 编码器改成 H.265（会用 hvc1 标签与 hevc 编码器）
-          const codecSel = findSel((s) => [...s.options].some((o) => o.value === 'h264' || o.value === 'h264_nvenc'));
+          /*
+           * 2) 编码器改成 H.265
+           *
+           * 判据放宽为"这个下拉里有任何 hevc 选项" —— 之前写死找含 h264 的下拉，
+           * 一旦选项列表里没有 h264/h264_nvenc（例如编码器可用性探测把它过滤掉了），
+           * 就会误判成"找不到编码器下拉"，把功能问题伪装成测试问题。
+           */
+          const codecSel = findSel((s) => [...s.options].some((o) => o.value.startsWith('hevc')));
           const codecOk = codecSel
             ? setVal(codecSel, [...codecSel.options].find((o) => o.value.startsWith('hevc'))?.value ?? 'hevc')
             : false;
@@ -645,13 +780,13 @@ async function runSmokeCheck(): Promise<void> {
     );
     await shotDelay(300);
 
+
     /*
      * 「高级选项会不会影响上面的选择」——用户在界面上提出来的疑问，确实是个真 bug。
      *
      * 原实现里手动改格式**不会清掉用途标记**，于是用途卡片继续高亮、
      * 继续显示该用途的提示，而实际参数已经不是那一套了 —— 卡片等于在说谎。
-     * 这里验证两件事：① 改格式后用途卡片不再高亮，且出现「参数已偏离」提示；
-     * ② 点「恢复推荐值」能把参数收回来。
+     * 这里验证：改格式后卡片保留高亮 + 出现「参数已偏离」提示 + 一键恢复能收回。
      */
     const deviation = await evalJs<{
       beforeActive: string;
@@ -900,28 +1035,86 @@ async function runSmokeCheck(): Promise<void> {
       ],
     );
 
-    // 收尾：恢复默认命名与用途，避免影响后续截图
-    await evalJs<boolean>(
-      '恢复默认命名与用途',
-      `(() => {
-        const sel = [...document.querySelectorAll('.advanced-body select')].find(
-          (s) => [...s.options].some((o) => o.value === 'custom')
-        );
-        if (sel) {
-          const keep = [...sel.options].find((o) => o.value === 'keep');
-          if (keep) {
-            sel.value = keep.value;
-            sel.dispatchEvent(new Event('change', { bubbles: true }));
+      // 收尾：恢复默认命名与用途，避免影响后续截图
+      await evalJs<boolean>(
+        '恢复默认命名与用途',
+        `(() => {
+          const sel = [...document.querySelectorAll('.advanced-body select')].find(
+            (s) => [...s.options].some((o) => o.value === 'custom')
+          );
+          if (sel) {
+            const keep = [...sel.options].find((o) => o.value === 'keep');
+            if (keep) {
+              sel.value = keep.value;
+              sel.dispatchEvent(new Event('change', { bubbles: true }));
+            }
           }
-        }
-        const first = document.querySelector('.usecase-card');
-        if (first) first.click();
-        const adv = document.querySelector('.advanced-toggle');
-        if (adv && document.querySelector('.advanced-body')) adv.click();
-        return true;
-      })()`,
-    );
-    await shotDelay(400);
+          const first = document.querySelector('.usecase-card');
+          if (first) first.click();
+          const adv = document.querySelector('.advanced-toggle');
+          if (adv && document.querySelector('.advanced-body')) adv.click();
+          return true;
+        })()`,
+      );
+      await shotDelay(400);
+
+      /*
+       * 展开「高级选项」单独截一张。
+       *
+       * 起因：用户在界面上反馈"很奇怪" —— 高级选项区域的布局是碎的。
+       * 折叠状态下截图看不到这一块，所以专门截一张展开态，让问题可见、
+       * 也让后续修复有可比对的证据。
+       */
+      await evalJs<boolean>(
+        '展开高级选项',
+        `(() => {
+          const adv = document.querySelector('.advanced-toggle');
+          if (adv && !document.querySelector('.advanced-body')) adv.click();
+          return true;
+        })()`,
+      );
+      await shotDelay(500);
+      await capture('main-advanced.png');
+      const advReport = await evalJs<{
+        rows: number;
+        selects: number;
+        inputs: number;
+        overflowW: boolean;
+        widest: string;
+      }>(
+        '检查高级选项布局',
+        `(() => {
+          const body = document.querySelector('.advanced-body');
+          if (!body) return { rows: 0, selects: 0, inputs: 0, overflowW: false, widest: '未展开' };
+          const panel = document.querySelector('.details');
+          const widest = [...body.querySelectorAll('*')]
+            .map((el) => ({ cls: String(el.className || el.tagName), w: el.getBoundingClientRect().width }))
+            .sort((a, b) => b.w - a.w)[0];
+          return {
+            rows: body.querySelectorAll('.field').length,
+            selects: body.querySelectorAll('select').length,
+            inputs: body.querySelectorAll('input').length,
+            overflowW: body.scrollWidth > body.clientWidth + 2,
+            widest: widest ? widest.cls.slice(0, 30) + '@' + Math.round(widest.w) : '',
+            panelW: panel ? Math.round(panel.getBoundingClientRect().width) : 0,
+          };
+        })()`,
+      );
+      extraChecks.push([
+        '高级选项：展开后不横向溢出',
+        !advReport.overflowW,
+        `${advReport.rows} 个字段、${advReport.selects} 个下拉，最宽元素 ${advReport.widest}，面板宽 ${(advReport as unknown as { panelW: number }).panelW}px`,
+      ]);
+      // 截完收起，保持后续截图与之前一致
+      await evalJs<boolean>(
+        '收起高级选项',
+        `(() => {
+          const adv = document.querySelector('.advanced-toggle');
+          if (adv && document.querySelector('.advanced-body')) adv.click();
+          return true;
+        })()`,
+      );
+      await shotDelay(300);
 
     /*
      * 回归：预设选择必须跨文件保留。
@@ -1691,12 +1884,19 @@ app.whenReady().then(async () => {
   // 早期实现放在窗口加载后清，与渲染进程 initStore() 读列表构成竞态 ——
   // 实测 3 次里有 1 次会读到旧列表，导致「空队列」断言时灵时不灵（20/21）。
   // 放在窗口创建前，渲染层首次拿到的就已经是空列表，不存在竞态。
+  //
+  // 同理，界面偏好（appMode / theme）也要在这里重置：它同样是渲染层
+  // initStore() 会读的持久化状态，放到窗口加载后再改一样会有竞态
+  // （实测出现过"磁盘已是 recommended、渲染层读到的还是上一轮的 custom"）。
   if (isSmokeMode) {
     const staleJobs = engine.list();
     if (staleJobs.length > 0) {
       for (const j of staleJobs) await engine.remove(j.id);
       console.log(`[smoke] 已清理 ${staleJobs.length} 个上次运行遗留的任务，保证自检从干净队列开始`);
     }
+    // 自检需要确定的初始界面状态：推荐模式 + 跟随系统主题
+    settings = await saveSettings({ appMode: 'recommended', theme: 'system' });
+    console.log('[smoke] 界面偏好已重置为推荐模式 + 跟随系统主题');
   }
 
   registerIpc();

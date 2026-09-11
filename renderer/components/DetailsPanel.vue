@@ -27,8 +27,10 @@ import {
   encoderAvailability,
   options,
   setActiveOverride,
+  settings,
   showToast,
   startConversion,
+  updateSettings,
   availableVideoCodecs,
   predictedOutput,
 } from '@/composables/useStore';
@@ -68,6 +70,30 @@ const setGlobal = (patch: Partial<ConversionOptions>): void => {
 
 /** 写当前文件的专属设置 */
 const setLocal = (patch: Partial<ConversionOptions>): void => setActiveOverride(patch);
+
+/* ------------------------------------------------------------------ *
+ * 两种模式：推荐 / 自定义
+ *
+ * 背景（用户反馈"很奇怪"）：原来把「用途卡片」和一大堆专业参数
+ * （格式 / 编码器 / 帧率 / 字幕 / 裁剪 / 命名 / 元数据）同时堆在一个面板里，
+ * 大众用户被淹没，专业用户又觉得用途卡片是多余的中间层。
+ *
+ * 现在分两个模式：
+ *   推荐 —— 只留"选用途 + 在哪播/多大 + 少量关键参数"，其余全部隐藏。
+ *            大众用户不需要知道编码器是什么。
+ *   自定义 —— 展开全部专业参数，并默认把用途当模板。
+ *
+ * 模式选择持久化在设置里（appMode），而不是只存在界面状态：
+ * 专业用户不想每次启动都重新展开一遍。
+ * ------------------------------------------------------------------ */
+
+const appMode = computed<'recommended' | 'custom'>(() => settings.value?.appMode ?? 'recommended');
+
+async function setAppMode(mode: 'recommended' | 'custom'): Promise<void> {
+  await updateSettings({ appMode: mode });
+  // 切到自定义时把详细区展开，省一次点击
+  if (mode === 'custom') advancedOpen.value = true;
+}
 
 /** 体积上限输入：空字符串 / 0 / 负数都视为"不限制" */
 function setSizeLimit(raw: string): void {
@@ -402,7 +428,27 @@ void VIDEO_CODECS;
     </div>
 
     <div v-else class="details-scroll">
-      <!-- ① 视频信息 -->
+      <!-- 模式切换：推荐（大众）/ 自定义（专业） -->
+      <div class="mode-switch">
+        <button
+          class="mode-btn"
+          :class="{ active: appMode === 'recommended' }"
+          @click="setAppMode('recommended')"
+        >
+          推荐设置
+          <small>选用途就够了</small>
+        </button>
+        <button
+          class="mode-btn"
+          :class="{ active: appMode === 'custom' }"
+          @click="setAppMode('custom')"
+        >
+          自定义
+          <small>我要自己调参数</small>
+        </button>
+      </div>
+
+      <!-- ① 视频信息（两种模式都显示，但推荐模式下更简略） -->
       <section class="block">
         <header class="block-head">
           <h4>视频信息</h4>
@@ -624,7 +670,7 @@ void VIDEO_CODECS;
         </div>
       </section>
 
-      <!-- ④ 质量与尺寸（体积上限开启时，质量档位不参与决定） -->
+      <!-- ④ 质量与尺寸（推荐模式只留这两项；帧率属于专业参数，放自定义模式） -->
       <section class="block">
         <header class="block-head">
           <h4>质量与尺寸</h4>
@@ -672,7 +718,8 @@ void VIDEO_CODECS;
             </select>
           </label>
 
-          <label v-if="!isAudioOnly" class="field">
+          <!-- 帧率只对专业用户有意义，放进自定义模式 -->
+          <label v-if="!isAudioOnly && appMode === 'custom'" class="field">
             <span class="field-label">帧率</span>
             <select
               class="select"
@@ -686,14 +733,14 @@ void VIDEO_CODECS;
         </div>
       </section>
 
-      <!-- ④ 高级选项 -->
-      <section class="block">
+      <!-- ⑤ 高级选项：只在自定义模式出现 -->
+      <section v-if="appMode === 'custom'" class="block">
         <button class="advanced-toggle" @click="advancedOpen = !advancedOpen">
           <svg viewBox="0 0 12 12" width="10" height="10" :style="{ transform: advancedOpen ? 'rotate(90deg)' : '' }">
             <path d="M4.5 2.5 8 6l-3.5 3.5" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
           </svg>
           高级选项
-          <span class="muted">编码器 / 音轨 / 字幕 / 裁剪 / 文件名</span>
+          <span class="muted">格式 / 编码器 / 音轨 / 字幕 / 裁剪 / 命名</span>
         </button>
 
         <div v-if="advancedOpen" class="advanced-body">
@@ -1181,11 +1228,32 @@ void VIDEO_CODECS;
 /* 表单 */
 .field-grid {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  /*
+   * minmax(0, 1fr) 而不是 1fr —— 这是修一个真实布局 bug 的关键。
+   *
+   * `1fr` 的最小值是 auto，网格列会被**内容**撑宽：高级选项里的 <select>
+   * 因为 <option> 文本很长（"AAC — MP4 标准音频，兼容性最好"）而把列撑到 516px，
+   * 而面板只有 400px，于是整个区域横向溢出、文字被截断（用户反馈"很奇怪"）。
+   * minmax(0, 1fr) 把最小宽度设为 0，列不再被内容撑开。
+   */
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
   gap: 10px;
 }
 .field-grid .field:only-child {
   grid-column: 1 / -1;
+}
+
+/* 网格/弹性子项默认 min-width:auto 也会被内容撑开，统一压回 0 */
+.field-grid > *,
+.advanced-body > *,
+.field {
+  min-width: 0;
+}
+
+/* 下拉框内容过长时省略，而不是把布局撑破 */
+.select {
+  max-width: 100%;
+  text-overflow: ellipsis;
 }
 
 .advanced-toggle {
@@ -1219,6 +1287,50 @@ void VIDEO_CODECS;
   border-radius: var(--radius);
   background: var(--bg-base);
   border: 1px solid var(--border-subtle);
+}
+
+/* ---------- 模式切换（推荐 / 自定义） ---------- */
+
+.mode-switch {
+  display: flex;
+  gap: 6px;
+  padding: 12px 0 4px;
+}
+
+.mode-btn {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 1px;
+  padding: 8px 11px;
+  border-radius: var(--radius);
+  border: 1px solid var(--border-subtle);
+  background: var(--bg-elevated);
+  cursor: pointer;
+  text-align: left;
+  font-weight: 600;
+  font-size: 12.5px;
+  transition: border-color 0.12s, background 0.12s;
+}
+.mode-btn:hover {
+  border-color: var(--border-strong);
+  background: var(--bg-hover);
+}
+.mode-btn.active {
+  border-color: var(--accent);
+  background: var(--accent-dim);
+  color: var(--accent);
+}
+.mode-btn small {
+  font-weight: 400;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+.mode-btn.active small {
+  color: var(--accent);
+  opacity: 0.85;
 }
 
 .check-list {

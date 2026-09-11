@@ -69,7 +69,7 @@ npm run smoke:ui:full
 转换偏好、主题与缓存清理。这一页信息量最大，能直接反映运行环境是否正常。*
 
 > 说明：`docs/screenshots/` 下的 5 张 PNG 由上面那两步命令**自动生成并覆盖**（第 1 步出前 4 张，第 2 步出 `queue-done.png`），
-> `smoke:ui:full` 一级同时执行 **35 项**界面断言（断言内容见 [docs/TEST_CASES.md](docs/TEST_CASES.md) 的 A7 / A8 / B0 节，
+> `smoke:ui:full` 一级同时执行 **40 项**界面断言（断言内容见 [docs/TEST_CASES.md](docs/TEST_CASES.md) 的 A7 / A8 / B0 节，
 > 截图清单见 [docs/screenshots/README.md](docs/screenshots/README.md)）。
 > 在你本地首次跑出截图之前，上面的图片引用会是空链接。
 
@@ -379,12 +379,12 @@ npm start              # 构建后直接以生产模式启动（electron .）
 npm run smoke              # 端到端冒烟：合成素材 → ffprobe 探测 → 缩略图抽帧 → 命令装配 → 真跑 ffmpeg → 校验产物
 npm run smoke -- --quick   # 只跑核心用例（跳过 H.265 / 旋转样本的合成）
 npm run smoke:ui           # 构建后以 --smoke 启动 Electron，做界面自检并截图（14 项检查）
-npm run smoke:ui:file      # 上一项 + 加载真实视频后再截图（25 项检查）
-npm run smoke:ui:full      # 再额外在应用内真的点一次「开始转换」并等任务跑完（35 项检查）
+npm run smoke:ui:file      # 上一项 + 加载真实视频后再截图（29 项检查）
+npm run smoke:ui:full      # 再额外在应用内真的点一次「开始转换」并等任务跑完（40 项检查）
 ```
 
 **当前实测结果**：`npm run smoke` **48/48 通过**（0 失败，总耗时 18.4s），
-`npm run smoke:ui:full` **35/35 通过、退出码 0**（三级命令的检查项是递进追加的：14 → 25 → 35），
+`npm run smoke:ui:full` **40/40 通过、退出码 0**（三级命令的检查项是递进追加的：14 → 29 → 40），
 `npm run typecheck` 主进程 `tsc` 与渲染层 `vue-tsc` 均退出码 0、零错误。
 不需要任何外部素材——测试视频用 `lavfi` 的 `testsrc2` + 正弦音现场合成，
 所以任何机器上 clone 下来（跑完 `npm run setup`）都能复现。
@@ -441,7 +441,7 @@ npm run dist:portable   # = node scripts/package-portable.mjs --build
 
 `release/` 已在 `.gitignore` 中排除（`git check-ignore -v release/` 会命中 `.gitignore` 第 4 行），所以产物不入库。
 
-便携版**实跑了全套界面自检并 35/35 通过、退出码 0**：
+便携版**实跑了全套界面自检并 40/40 通过、退出码 0**：
 
 ```bash
 release/Lumen-conv-便携版/Lumen-conv.exe --smoke --smoke-file=<绝对路径> --smoke-convert
@@ -704,7 +704,7 @@ node scripts/fetch-binaries.mjs --force
 | **便携版 exe 用 Electron 默认图标、没有版本信息** | `package-portable.mjs` 会用 `electron-winstaller` 附带的 `rcedit.exe` 写图标与版本信息，但该版本 rcedit 在**路径含非 ASCII 字符**时（本项目路径含中文）报 `Fatal error: Unable to load file`，脚本如实跳过该步骤（实测 `Lumen-conv.exe` 的版本信息仍是 Electron 原值：`ProductName=Electron`、`OriginalFilename=electron.exe`）。**脚本刻意不做环境相关绕行**（例如把 exe 复制到临时 ASCII 路径再改回来），图标缺失不影响运行 |
 | **`test-assets/` 会被测试重新生成** | `test-assets/output/` 与 `test-assets/samples/` 已在 `.gitignore` 中排除，但**忽略 ≠ 清空**：这两个目录在磁盘上**仍然有文件**（`output/` 是最近一次 `npm run smoke` 的 9 个产物，`samples/` 是合成素材）。**已知现象**：界面自检的默认输出目录就是源文件同目录 + 自动改名策略，所以每跑一次 `npm run smoke:ui:full` 就会在 `test-assets/samples/` 里多出一个 `sample-h264 (n).mp4`；带序号的文件在多轮测试后被清理过，但**下次再跑仍会重新产生** |
 | **硬件编码器参数未在真卡上验证** | 本机只有 Intel 核显可用（**H.264 QSV 实测可用**），没有 NVIDIA / AMD 显卡：NVENC 与 AMF 在设置页显示"编码器初始化失败（通常是驱动问题）"。`-cq`（NVENC）/ `-b:v`（AMF）这些真卡参数**没有在任何硬件上跑过**，也没有任何一条真实转码用例走硬件编码器 |
-| **没有单元测试框架** | 没有 Vitest / Jest，纯函数（`renderer/utils/format.ts`、`progress.ts` 的解析、`sanitizeFileName()`）未做边界穷举。当前只有端到端冒烟（48 项）与界面自检（三级 14 / 21 / 31 项）两层 |
+| **没有单元测试框架** | 没有 Vitest / Jest，纯函数（`renderer/utils/format.ts`、`progress.ts` 的解析、`sanitizeFileName()`）未做边界穷举。当前只有端到端冒烟（48 项）与界面自检（三级 14 / 29 / 40 项）两层 |
 | 字幕只做软字幕 | 不支持烧录（hardsub）、不支持外挂字幕文件、不支持把 MKV 内封字幕抽成 `.srt`；WebM 容器下会自动剔除图形/ASS 字幕并提示改用 MKV |
 | **没有断点续传** | 转换中断（取消 / 崩溃 / 关机）只能整段重来 |
 | **GIF 只统计整段调色板** | `palettegen=stats_mode=diff` 针对整段视频统计颜色，超长视频做 GIF 很慢且体积大。UI 只在预设提示里建议"先裁剪 3-6 秒"，**没有硬性限制** |

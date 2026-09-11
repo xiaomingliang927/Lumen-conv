@@ -9,7 +9,7 @@ npm run smoke:ui:file
 该命令会：构建项目 → 启动真实 Electron 窗口 → 等待界面骨架挂载**且** `data-store-ready="1"`
 → 通过 `window.__lumenAddFiles()`（与拖拽完全相同的 `addFiles` 路径）加载
 `test-assets/samples/sample-h264.mp4` → 依次切到「转换 / 任务队列 / 设置」三页 →
-截图写入本目录 → 跑 **21 项界面断言** → 以退出码反映结果。
+截图写入本目录 → 跑 **29 项界面断言** → 以退出码反映结果。
 
 | 文件名 | 内容 | 断言依据 |
 | --- | --- | --- |

@@ -547,6 +547,80 @@ async function runSmokeCheck(): Promise<void> {
         keptPreset.label === 'MP4 通用兼容' && keptPreset.files >= 2,
         `${keptPreset.files} 个文件，当前预设「${keptPreset.label}」`,
       ]);
+
+      /*
+       * 质量下拉框的交互验证。
+       *
+       * 起因：用户问"这个（质量下拉）是可以用的吗"。查下来发现更严重的问题——
+       * 质量/分辨率/帧率/编码器/文件名模板全都写进了**按文件的 overrides**，
+       * 而选中态读的是别的来源，导致调好的参数一换文件就丢。
+       * 这里直接操作 <select> 并断言：① 值确实变了 ② 换文件后不丢。
+       */
+      const qualityChange = await evalJs<{
+        before: string;
+        after: string;
+        options: number;
+        persisted: boolean;
+        estimateChanged: boolean;
+      }>(
+        '切换质量档位并验证跨文件保留',
+        `(async () => {
+          const sel = [...document.querySelectorAll('.details select')].find(
+            (s) => s.querySelector('option')?.value?.includes('balanced') ||
+                   [...s.options].some((o) => o.value === 'balanced')
+          );
+          if (!sel) return { before: '', after: '', options: 0, persisted: false, estimateChanged: false };
+          const estimateOf = () => (document.querySelector('.details-foot .foot-estimate')?.textContent ?? '').trim();
+          const before = sel.value;
+          const beforeEstimate = estimateOf();
+          // 选一个与当前不同的档位
+          const target = [...sel.options].find((o) => o.value !== before);
+          if (!target) return { before, after: before, options: sel.options.length, persisted: false, estimateChanged: false };
+          sel.value = target.value;
+          sel.dispatchEvent(new Event('change', { bubbles: true }));
+          await new Promise((r) => setTimeout(r, 200));
+          const after = sel.value;
+          const estimateChanged = estimateOf() !== beforeEstimate;
+
+          // 切到另一个文件再切回来，检查是否保留
+          const cards = [...document.querySelectorAll('.file-card')];
+          let persisted = false;
+          if (cards.length >= 2) {
+            cards[cards.length - 1].click();
+            await new Promise((r) => setTimeout(r, 300));
+            cards[0].click();
+            await new Promise((r) => setTimeout(r, 300));
+            const sel2 = [...document.querySelectorAll('.details select')].find(
+              (s) => [...s.options].some((o) => o.value === 'balanced')
+            );
+            persisted = sel2 ? sel2.value === after : false;
+          }
+          return { before, after, options: sel.options.length, persisted, estimateChanged };
+        })()`,
+      );
+      extraChecks.push(
+        [
+          '质量下拉：可选档位完整',
+          qualityChange.options >= 5,
+          `${qualityChange.options} 个档位`,
+        ],
+        [
+          '质量下拉：切换后值生效',
+          qualityChange.after !== qualityChange.before && qualityChange.after.length > 0,
+          `${qualityChange.before} → ${qualityChange.after}`,
+        ],
+        [
+          '质量下拉：切换后体积预估联动',
+          qualityChange.estimateChanged,
+          qualityChange.estimateChanged ? '预估已变化' : '预估未变化',
+        ],
+        [
+          '质量选择跨文件保留',
+          qualityChange.persisted,
+          qualityChange.persisted ? '切文件后仍是所选档位' : '切文件后丢失（预期应为保留）',
+        ],
+      );
+
       // 移除第二个文件，保持后续队列/转换用例只有 1 个文件
       await evalJs<boolean>(
         '移除第二个文件',
@@ -601,6 +675,28 @@ async function runSmokeCheck(): Promise<void> {
       for (const j of engine.list()) await engine.remove(j.id);
       const beforeClick = engine.list().length;
 
+      /*
+       * 在点击之前，先把质量下拉切到「极小体积」，然后断言生成的任务命令里
+       * 确实带上了对应的 CRF（34，见 shared/presets.ts 的 QUALITY_PRESETS）。
+       *
+       * 这是回答"这个下拉框真的有用吗"的唯一硬证据：界面值变了、预估变了都只是
+       * 间接迹象，只有 ffmpeg 命令里的 -crf 跟着变，才能说明它真的影响转换结果。
+       */
+      const qualityForCommand = await evalJs<{ picked: string; label: string }>(
+        '将质量切到「极小体积」',
+        `(() => {
+          const sel = [...document.querySelectorAll('.details select')].find(
+            (s) => [...s.options].some((o) => o.value === 'balanced')
+          );
+          if (!sel) return { picked: '', label: '' };
+          sel.value = 'tiny';
+          sel.dispatchEvent(new Event('change', { bubbles: true }));
+          const label = (sel.options[sel.selectedIndex]?.textContent ?? '').trim();
+          return { picked: sel.value, label };
+        })()`,
+      );
+      await shotDelay(300);
+
       const clicked = await evalJs<{ clicked: boolean; label: string; disabled: boolean }>(
         '点击「开始转换」',
         `(() => {
@@ -629,6 +725,19 @@ async function runSmokeCheck(): Promise<void> {
         '应用内转换：按钮点击真的创建了任务',
         enqueued,
         `点击前后队列长度 ${beforeClick} → ${engine.list().length}`,
+      ]);
+
+      // 把"界面上的质量选择"与"真实执行的 ffmpeg 命令"对上。
+      // 「极小体积」在 QUALITY_PRESETS 里对应 CRF 34，硬编码这个期望值，
+      // 断言才有意义（写成"命令里有 -crf"这种松断言等于没断言）。
+      const newJob = engine.list().find((j) => j.state !== 'canceled');
+      const crfMatch = /-crf\s+(\d+)/.exec(newJob?.command ?? '');
+      extraChecks.push([
+        '质量下拉真的影响 ffmpeg 命令（极小体积 → CRF 34）',
+        qualityForCommand.picked === 'tiny' && crfMatch?.[1] === '34',
+        crfMatch
+          ? `界面选「${qualityForCommand.label.slice(0, 8)}」，命令里 -crf ${crfMatch[1]}`
+          : `未在命令里找到 -crf（命令片段：${(newJob?.command ?? '').slice(0, 80)}）`,
       ]);
 
       // 等队列里出现任务并跑到终态

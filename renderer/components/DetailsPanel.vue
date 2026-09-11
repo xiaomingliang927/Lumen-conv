@@ -21,6 +21,7 @@ import {
   activePreset,
   activeProbe,
   clearActiveOverride,
+  effectiveOptions,
   encoderAvailability,
   options,
   setActiveOverride,
@@ -29,6 +30,7 @@ import {
   availableVideoCodecs,
   predictedOutput,
 } from '@/composables/useStore';
+import type { ConversionOptions } from '@shared/types';
 import { CONTAINERS, VIDEO_CODECS, AUDIO_CODECS } from '@shared/presets';
 import {
   fileExtension,
@@ -43,7 +45,37 @@ import {
 } from '@/utils/format';
 
 const advancedOpen = ref(false);
-const p = (patch: Parameters<typeof setActiveOverride>[0]) => setActiveOverride(patch);
+
+/**
+ * 参数变更分两类处理，这个区分很重要（是一个真实 bug 的教训）：
+ *
+ * - **全局偏好**（质量 / 分辨率 / 帧率 / 编码器 / 音频编码 / 文件名模板）：
+ *   表达的是"我想把视频转成什么样"，属于跨文件复用的意图。
+ *   早期实现把它们都写进了 setActiveOverride()（按文件覆盖），后果是
+ *   **用户调好的参数一换文件就全丢**，而界面上看不出任何征兆。
+ *
+ * - **文件特有设置**（裁剪区间 / 字幕轨道勾选）：
+ *   天然与具体文件绑定（"这个视频从 1:30 开始"），保持按文件覆盖是对的。
+ */
+
+/** 写全局偏好 */
+const setGlobal = (patch: Partial<ConversionOptions>): void => {
+  options.value = { ...options.value, ...patch };
+};
+
+/** 写当前文件的专属设置 */
+const setLocal = (patch: Partial<ConversionOptions>): void => setActiveOverride(patch);
+
+/**
+ * 当前文件的生效值（全局偏好 + 本文件覆盖），所有控件都用它回显。
+ *
+ * 这样即使某个文件带着旧的 overrides，界面显示的也是**真正会被用于转换的值**，
+ * 不会出现"界面显示 A、实际转出 B"。
+ */
+const eff = computed<ConversionOptions>(() => {
+  const file = activeFile.value;
+  return file ? effectiveOptions(file) : options.value;
+});
 
 const probe = computed(() => activeProbe.value);
 const video = computed(() => probe.value?.video.find((v) => !v.isAttachedPic) ?? null);
@@ -74,22 +106,22 @@ const codecChoices = computed(() => {
 
 const currentContainer = computed(() => CONTAINERS[activePreset.value.container]);
 const isAudioOnly = computed(() => currentContainer.value.videoCodecs.length === 0);
-const isRemux = computed(() => options.value.videoCodecId === 'copy');
+const isRemux = computed(() => eff.value.videoCodecId === 'copy');
 
 const audioChoices = computed(() =>
   AUDIO_CODECS.filter((a) => currentContainer.value.audioCodecs.includes(a.id)),
 );
 
 const selectedSubs = computed({
-  get: () => options.value.subtitleStreamIndexes,
-  set: (v: number[]) => p({ subtitleStreamIndexes: v }),
+  get: () => eff.value.subtitleStreamIndexes,
+  set: (v: number[]) => setLocal({ subtitleStreamIndexes: v }),
 });
 
 function toggleSub(index: number): void {
-  const cur = new Set(options.value.subtitleStreamIndexes);
+  const cur = new Set(eff.value.subtitleStreamIndexes);
   if (cur.has(index)) cur.delete(index);
   else cur.add(index);
-  p({ subtitleStreamIndexes: [...cur] });
+  setLocal({ subtitleStreamIndexes: [...cur] });
 }
 
 /**
@@ -153,7 +185,7 @@ function revealInFolder(p: string): void {
 /* 文件名模板预览 */
 const templatePreview = computed(() => {
   const name = probe.value?.fileName.replace(/\.[^.]+$/, '') ?? '视频文件名';
-  const rendered = options.value.fileNameTemplate
+  const rendered = eff.value.fileNameTemplate
     .replace(/\{name\}/g, name)
     .replace(/\{preset\}/g, activePreset.value.label)
     .replace(/\{date\}/g, new Date().toISOString().slice(0, 10));
@@ -161,29 +193,38 @@ const templatePreview = computed(() => {
   return `${rendered}.${ext}`;
 });
 
-const quality = computed(() => QUALITY_PRESETS.find((q) => q.id === options.value.qualityId));
+const quality = computed(() => QUALITY_PRESETS.find((q) => q.id === eff.value.qualityId));
+
+// 是否保留元数据属于「我想怎么转」的偏好，跨文件复用，所以走全局
 const keepMetadata = computed({
-  get: () => options.value.keepMetadata,
-  set: (v: boolean) => p({ keepMetadata: v }),
+  get: () => eff.value.keepMetadata,
+  set: (v: boolean) => setGlobal({ keepMetadata: v }),
 });
 
+// 裁剪属于文件特有设置，走按文件覆盖
 const trimEnabled = ref(false);
 function enableTrim(): void {
   const dur = probe.value?.durationSec ?? 0;
   trimEnabled.value = true;
-  p({ trimStartSec: 0, trimEndSec: Math.min(dur, 10) });
+  setLocal({ trimStartSec: 0, trimEndSec: Math.min(dur, 10) });
 }
 function disableTrim(): void {
   trimEnabled.value = false;
-  p({ trimStartSec: null, trimEndSec: null });
+  setLocal({ trimStartSec: null, trimEndSec: null });
 }
 const trimStart = computed({
-  get: () => options.value.trimStartSec ?? 0,
-  set: (v: number) => p({ trimStartSec: Math.max(0, Math.min(v, options.value.trimEndSec ?? probe.value?.durationSec ?? 0)) }),
+  get: () => eff.value.trimStartSec ?? 0,
+  set: (v: number) =>
+    setLocal({
+      trimStartSec: Math.max(0, Math.min(v, eff.value.trimEndSec ?? probe.value?.durationSec ?? 0)),
+    }),
 });
 const trimEnd = computed({
-  get: () => options.value.trimEndSec ?? probe.value?.durationSec ?? 0,
-  set: (v: number) => p({ trimEndSec: Math.max(options.value.trimStartSec ?? 0, Math.min(v, probe.value?.durationSec ?? 0)) }),
+  get: () => eff.value.trimEndSec ?? probe.value?.durationSec ?? 0,
+  set: (v: number) =>
+    setLocal({
+      trimEndSec: Math.max(eff.value.trimStartSec ?? 0, Math.min(v, probe.value?.durationSec ?? 0)),
+    }),
 });
 
 void fileExtension;
@@ -355,9 +396,9 @@ void VIDEO_CODECS;
             <span class="field-label">质量</span>
             <select
               class="select"
-              :value="options.qualityId"
+              :value="eff.qualityId"
               :disabled="isRemux"
-              @change="p({ qualityId: ($event.target as HTMLSelectElement).value })"
+              @change="setGlobal({ qualityId: ($event.target as HTMLSelectElement).value })"
             >
               <option v-for="q in QUALITY_PRESETS" :key="q.id" :value="q.id">
                 {{ q.label }} — {{ q.description }}
@@ -370,9 +411,9 @@ void VIDEO_CODECS;
             <span class="field-label">分辨率</span>
             <select
               class="select"
-              :value="options.resolutionId"
+              :value="eff.resolutionId"
               :disabled="isRemux"
-              @change="p({ resolutionId: ($event.target as HTMLSelectElement).value })"
+              @change="setGlobal({ resolutionId: ($event.target as HTMLSelectElement).value })"
             >
               <option v-for="r in RESOLUTION_PRESETS" :key="r.id" :value="r.id">
                 {{ r.label }}<template v-if="r.id !== 'source'"> — {{ r.description }}</template>
@@ -384,9 +425,9 @@ void VIDEO_CODECS;
             <span class="field-label">帧率</span>
             <select
               class="select"
-              :value="options.fpsId"
+              :value="eff.fpsId"
               :disabled="isRemux"
-              @change="p({ fpsId: ($event.target as HTMLSelectElement).value })"
+              @change="setGlobal({ fpsId: ($event.target as HTMLSelectElement).value })"
             >
               <option v-for="f in FPS_PRESETS" :key="f.id" :value="f.id">{{ f.label }}</option>
             </select>
@@ -410,8 +451,8 @@ void VIDEO_CODECS;
               <span class="field-label">视频编码器</span>
               <select
                 class="select"
-                :value="options.videoCodecId"
-                @change="p({ videoCodecId: ($event.target as HTMLSelectElement).value })"
+                :value="eff.videoCodecId"
+                @change="setGlobal({ videoCodecId: ($event.target as HTMLSelectElement).value })"
               >
                 <option
                   v-for="c in codecChoices"
@@ -429,8 +470,8 @@ void VIDEO_CODECS;
               <span class="field-label">音频编码</span>
               <select
                 class="select"
-                :value="options.audioCodecId"
-                @change="p({ audioCodecId: ($event.target as HTMLSelectElement).value })"
+                :value="eff.audioCodecId"
+                @change="setGlobal({ audioCodecId: ($event.target as HTMLSelectElement).value })"
               >
                 <option v-for="a in audioChoices" :key="a.id" :value="a.id">
                   {{ a.label }} — {{ a.description }}
@@ -515,9 +556,9 @@ void VIDEO_CODECS;
               <span class="field-label">文件名模板</span>
               <input
                 class="input"
-                :value="options.fileNameTemplate"
+                :value="eff.fileNameTemplate"
                 placeholder="{name}"
-                @input="p({ fileNameTemplate: ($event.target as HTMLInputElement).value })"
+                @input="setGlobal({ fileNameTemplate: ($event.target as HTMLInputElement).value })"
               />
               <span class="field-hint">
                 可用变量：<code>{name}</code> <code>{preset}</code> <code>{date}</code>

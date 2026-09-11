@@ -111,6 +111,12 @@ async function loadModules() {
     errors: 'electron/ffmpeg/errors.ts',
     // 批量/并发调度是「一次选多个文件」的核心，必须用真实的引擎代码来测
     engine: 'electron/ffmpeg/convert.ts',
+    // 字幕烧录的路径转义规则（ffmpeg 经典坑）单独测
+    subtitleBurn: 'shared/subtitle-burn.ts',
+    // 输出尺寸计算：界面显示与 ffmpeg 滤镜读的同一份计划
+    outputSize: 'shared/output-size.ts',
+    // 兼容性预检：字幕烧录的前置校验也在这里
+    compatibility: 'shared/compatibility.ts',
   };
 
   const built = {};
@@ -237,6 +243,32 @@ async function main() {
     assert(probeResult.bitrateKbps > 0, '码率应大于 0');
     return `${probeResult.bitrateKbps} kbps`;
   });
+
+  /*
+   * 字幕烧录用的两个探测结果桩。
+   *
+   * 真实样本里 `.srt` 内嵌字幕的素材（subs-multi.mkv）确实有，但它的字幕轨在
+   * 全片范围内，用它测"图形字幕拦截"还得另找 PGS 素材；这两条判定是**纯逻辑**
+   * （文字字幕 vs 图形字幕、全局 index vs si），用桩更精确也更快。
+   * 真实素材路径由 test:real:convert 覆盖。
+   */
+  const subsProbe = {
+    ...probeResult,
+    path: path.join(SAMPLES, 'subs-multi.mkv'),
+    hasSubtitle: true,
+    subtitle: [
+      { index: 2, codec: 'subrip', isTextBased: true, language: 'chi', title: '简体中文', isForced: false },
+      { index: 3, codec: 'subrip', isTextBased: true, language: 'eng', title: 'English', isForced: false },
+    ],
+  };
+  const pgsProbe = {
+    ...probeResult,
+    path: path.join(SAMPLES, 'subs-multi.mkv'),
+    hasSubtitle: true,
+    subtitle: [
+      { index: 2, codec: 'hdmv_pgs_subtitle', isTextBased: false, language: 'chi', title: '图形字幕', isForced: false },
+    ],
+  };
   check('缩略图抽帧时间点在合理区间', () => {
     const t = probeResult.thumbnailAtSec;
     assert(t >= 0 && t <= probeResult.durationSec, `抽帧点 ${t} 越界`);
@@ -434,6 +466,196 @@ async function main() {
     const text = r.args.join(' ');
     assert(!/pad=/.test(text) && !/crop=/.test(text), '默认不应改画面比例');
     return '无 pad / crop';
+  });
+
+  /* ---------------- 音频处理（响度归一化 / 音量 / 声道） ---------------- */
+
+  check('音频：响度归一化生成 loudnorm 滤镜（EBU R128，-16 LUFS）', () => {
+    const r = mods.commands.buildCommand({ ...baseOptions, audioLoudnorm: true }, {
+      probe: probeResult,
+      outputPath: path.join(OUTPUT, 'loud.mp4'),
+    });
+    const text = r.args.join(' ');
+    assert(/-af\s+loudnorm=I=-16:TP=-1\.5:LRA=11/.test(text), `缺少 loudnorm 滤镜：${text.slice(0, 260)}`);
+    return 'loudnorm=I=-16:TP=-1.5:LRA=11';
+  });
+
+  check('音频：音量增益与响度归一化同时开启时，顺序是"先增益、后归一化"', () => {
+    const r = mods.commands.buildCommand(
+      { ...baseOptions, audioVolumeDb: 6, audioLoudnorm: true },
+      { probe: probeResult, outputPath: path.join(OUTPUT, 'vol-loud.mp4') },
+    );
+    const text = r.args.join(' ');
+    /*
+     * 顺序很重要：loudnorm 会把响度拉平，如果它排在 volume 前面，
+     * 用户手动加的增益等于白加 —— 这条断言盯的就是这个顺序。
+     */
+    assert(/volume=6dB,loudnorm=/.test(text), `滤镜顺序不对：${text.slice(0, 260)}`);
+    return 'volume=6dB → loudnorm';
+  });
+
+  check('音频：音量增益会被夹在 -30 ~ +30 dB 之间', () => {
+    const r = mods.commands.buildCommand({ ...baseOptions, audioVolumeDb: 999 }, {
+      probe: probeResult,
+      outputPath: path.join(OUTPUT, 'vol-clamp.mp4'),
+    });
+    const text = r.args.join(' ');
+    assert(/volume=30dB/.test(text), `未夹紧上限：${text.slice(0, 200)}`);
+    return '999 → 30dB';
+  });
+
+  check('音频：声道改成单声道时输出 -ac 1', () => {
+    const r = mods.commands.buildCommand({ ...baseOptions, audioChannels: 'mono' }, {
+      probe: probeResult,
+      outputPath: path.join(OUTPUT, 'mono.mp4'),
+    });
+    const text = r.args.join(' ');
+    assert(/-ac\s+1/.test(text), `缺少 -ac 1：${text.slice(0, 220)}`);
+    return '-ac 1';
+  });
+
+  check('音频：声道保持原样时不强行加 -ac（交给原有推断逻辑）', () => {
+    const r = mods.commands.buildCommand({ ...baseOptions, audioChannels: 'source' }, {
+      probe: probeResult,
+      outputPath: path.join(OUTPUT, 'src-ch.mp4'),
+    });
+    const text = r.args.join(' ');
+    // smoke 样本是单声道源，source 模式下不该出现 -ac
+    assert(!/-ac\s/.test(text), `source 模式不应出现 -ac：${text.slice(0, 220)}`);
+    return '无 -ac';
+  });
+
+  check('音频：直通（copy）时忽略音频处理滤镜，不生成 -af', () => {
+    const r = mods.commands.buildCommand(
+      { ...baseOptions, audioCodecId: 'copy', audioLoudnorm: true, audioVolumeDb: 3 },
+      { probe: probeResult, outputPath: path.join(OUTPUT, 'acopy.mp4') },
+    );
+    const text = r.args.join(' ');
+    assert(/-c:a\s+copy/.test(text), 'copy 模式应保留 -c:a copy');
+    assert(!/-af\s/.test(text), `copy 模式不该有 -af（滤镜会被忽略或报错）：${text.slice(0, 220)}`);
+    return '-c:a copy，无 -af';
+  });
+
+  /* ---------------- 字幕烧录 ---------------- */
+
+  check('字幕烧录：路径转义正确（反斜杠 / 冒号 / 空格 / 中文）', () => {
+    const { escapeFilterPath } = mods.subtitleBurn;
+    const got = escapeFilterPath('C:\\Users\\季\\我的 视频\\subs.srt');
+    assert(
+      got === "'C\\:/Users/季/我的 视频/subs.srt'",
+      `转义结果不对：${got}`,
+    );
+    return got;
+  });
+
+  check('字幕烧录：单引号按 ffmpeg 规则转义（闭合→转义→重开）', () => {
+    const { escapeFilterPath } = mods.subtitleBurn;
+    const got = escapeFilterPath("C:\\a'b\\x.srt");
+    assert(got === "'C\\:/a'\\''b/x.srt'", `单引号转义不对：${got}`);
+    return got;
+  });
+
+  check('字幕烧录：全局流 index 换算成"第几条字幕流"', () => {
+    const { subtitleStreamOrdinal } = mods.subtitleBurn;
+    // 流顺序 0=视频 1=音频 2=字幕 3=字幕 → 全局 3 是第 2 条字幕（si=1）
+    assert(subtitleStreamOrdinal([2, 3], 3) === 1, 'si 换算错误');
+    assert(subtitleStreamOrdinal([2, 3], 2) === 0, 'si 换算错误');
+    assert(subtitleStreamOrdinal([], 9) === 0, '空列表应兜底为 0');
+    return '全局 3 → si 1';
+  });
+
+  check('字幕烧录：直通模式会被拦下并给出人话原因', () => {
+    let err = null;
+    try {
+      mods.commands.buildCommand(
+        { ...baseOptions, videoCodecId: 'copy', burnSubtitleIndex: 2 },
+        { probe: subsProbe, outputPath: path.join(OUTPUT, 'burn-copy.mkv') },
+      );
+    } catch (e) {
+      err = e;
+    }
+    assert(err, '直通 + 烧录应当抛错');
+    assert(/直通|不能烧录/.test(String(err.message)), `错误信息不清晰：${err.message}`);
+    return String(err.message).slice(0, 40);
+  });
+
+  check('字幕烧录：图形字幕（PGS）被拦下', () => {
+    let err = null;
+    try {
+      mods.commands.buildCommand(
+        { ...baseOptions, burnSubtitleIndex: 2 },
+        { probe: pgsProbe, outputPath: path.join(OUTPUT, 'burn-pgs.mp4') },
+      );
+    } catch (e) {
+      err = e;
+    }
+    assert(err, '图形字幕烧录应当抛错');
+    assert(/图形字幕/.test(String(err.message)), `错误信息不清晰：${err.message}`);
+    return String(err.message).slice(0, 40);
+  });
+
+  check('字幕烧录：文字字幕生成 subtitles 滤镜，且排在缩放之后', () => {    /*
+     * 用一个 720p 的源 + 360p 目标，确保这条链路里**真的存在** scale 滤镜 ——
+     * 否则（源比目标小、按"只缩不放"跳过缩放）就测不到顺序，
+     * 只会得到一个"看起来通过"的空断言。
+     */
+    const hdProbe = {
+      ...subsProbe,
+      video: [{ ...subsProbe.video[0], width: 1280, height: 720, displayWidth: 1280, displayHeight: 720 }],
+    };
+    const r = mods.commands.buildCommand(
+      { ...baseOptions, resolutionId: '360p', burnSubtitleIndex: 2 },
+      { probe: hdProbe, outputPath: path.join(OUTPUT, 'burn-ok.mp4') },
+    );
+    const text = r.args.join(' ');
+    assert(/subtitles=/.test(text), `缺少 subtitles 滤镜：${text.slice(0, 300)}`);
+    assert(/si=0/.test(text), `si 参数不对：${text.slice(0, 300)}`);
+    const vf = /-vf\s+(\S+)/.exec(text)?.[1] ?? '';
+    assert(vf.includes('scale='), `这条用例必须包含 scale 才有意义：${vf}`);
+    assert(
+      vf.indexOf('subtitles') > vf.indexOf('scale'),
+      `subtitles 必须排在 scale 之后（否则字幕会跟着画面一起缩放）：${vf}`,
+    );
+    return vf.slice(0, 80);
+  });
+
+  /*
+   * 字幕烧录的**界面级**前置校验（compatibility.ts）。
+   *
+   * 与上面那条"buildCommand 会抛错"的区别：buildCommand 是点了"开始转换"之后才报，
+   * 而这里要求**改参数的当下**就出现红条 —— "转完才发现白转"正是这个模块存在的理由。
+   * 真实用户反馈里那条"换成手机后比例没变"就是吃了"界面与执行各算各的"的亏。
+   */
+  check('字幕烧录：直通时兼容性预检给出 block 级警告（不用等到点开始转换）', () => {
+    const issues = mods.compatibility.checkCompatibility({
+      probe: subsProbe,
+      options: { ...baseOptions, videoCodecId: 'copy', burnSubtitleIndex: 2 },
+    });
+    const hit = issues.find((i) => i.level === 'block' && i.message.includes('烧录'));
+    assert(hit, `预检没有拦住：${JSON.stringify(issues.map((i) => i.message))}`);
+    assert(hit.fix && hit.fix.videoCodecId, '应当给出一键修复');
+    return hit.message;
+  });
+
+  check('字幕烧录：图形字幕在预检里也被拦下', () => {
+    const issues = mods.compatibility.checkCompatibility({
+      probe: pgsProbe,
+      options: { ...baseOptions, burnSubtitleIndex: 2 },
+    });
+    const hit = issues.find((i) => i.level === 'block' && i.message.includes('图形字幕'));
+    assert(hit, `预检没有拦住：${JSON.stringify(issues.map((i) => i.message))}`);
+    return hit.message;
+  });
+
+  check('字幕烧录：合法组合给出 info 级说明（不吓唬用户，但要说清代价）', () => {
+    const issues = mods.compatibility.checkCompatibility({
+      probe: subsProbe,
+      options: { ...baseOptions, burnSubtitleIndex: 2 },
+    });
+    const hit = issues.find((i) => i.level === 'info' && i.message.includes('烧进画面'));
+    assert(hit, `缺少说明：${JSON.stringify(issues.map((i) => i.message))}`);
+    assert(/重新编码/.test(hit.suggestion ?? ''), '说明里要提到必须重新编码');
+    return hit.message;
   });
 
   check('H.265 预设带 hvc1 标签', () => {

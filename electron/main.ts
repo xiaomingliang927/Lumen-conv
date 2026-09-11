@@ -812,6 +812,245 @@ async function runSmokeCheck(): Promise<void> {
     await shotDelay(300);
 
     /*
+     * 音频处理（响度归一化 / 音量增益 / 声道）—— 2026-09 新增。
+     *
+     * 以前只有"移除音频"，没有任何音频处理能力。响度归一化是最常用的那个：
+     * 多个片源音量忽大忽小，发出去对方要不停调音量。
+     *
+     * ⚠ 这一段必须在**自定义模式**下跑：音频处理与字幕烧录都住在「专业参数」里，
+     * 而推荐模式下那块整个不渲染（D-019）。
+     */
+    await evalJs<boolean>(
+      '切到自定义模式（验证音频处理与字幕烧录）',
+      `(async () => {
+        const btns = [...document.querySelectorAll('.mode-btn')];
+        if (btns[1]) btns[1].click();
+        await new Promise((r) => setTimeout(r, 380));
+        return true;
+      })()`,
+    );
+    await shotDelay(250);
+
+    const audioUi = await evalJs<{
+      hasLoudnorm: boolean;
+      hasVolume: boolean;
+      hasChannels: boolean;
+      monoSelected: boolean;
+      persistsAfterSwitch: boolean;
+      error: string;
+    }>(
+      '验证音频处理控件',
+      `(async () => {
+        const tick = () => new Promise((r) => setTimeout(r, 260));
+        const blank = { hasLoudnorm: false, hasVolume: false, hasChannels: false, monoSelected: false, persistsAfterSwitch: false, error: '' };
+        try {
+          const block = [...document.querySelectorAll('.pro-block .field')].find((f) =>
+            (f.querySelector('.field-label')?.textContent ?? '').includes('音频处理'),
+          );
+          if (!block) return { ...blank, error: '未找到音频处理区块（自定义模式下应有）' };
+
+          const selects = [...block.querySelectorAll('select')];
+          const loudSel = selects.find((s) => [...s.options].some((o) => o.value === 'on' && o.textContent.includes('LUFS')));
+          const chSel = selects.find((s) => [...s.options].some((o) => o.value === 'mono'));
+          const volInput = block.querySelector('input[type="number"]');
+
+          // 开响度归一化 + 增益 + 单声道
+          if (loudSel) {
+            loudSel.value = 'on';
+            loudSel.dispatchEvent(new Event('change', { bubbles: true }));
+            await tick();
+          }
+          if (volInput) {
+            volInput.value = '-4';
+            volInput.dispatchEvent(new Event('input', { bubbles: true }));
+            await tick();
+          }
+          if (chSel) {
+            chSel.value = 'mono';
+            chSel.dispatchEvent(new Event('change', { bubbles: true }));
+            await tick();
+          }
+
+          // 切到另一个文件再切回来，确认是全局偏好（不随文件丢失）
+          const cards = [...document.querySelectorAll('.file-card')];
+          if (cards.length >= 2) {
+            cards[1].click();
+            await tick();
+            await tick();
+            cards[0].click();
+            await tick();
+          }
+          const chSel2 = [...document.querySelectorAll('.pro-block select')].find((s) =>
+            [...s.options].some((o) => o.value === 'mono'),
+          );
+          return {
+            hasLoudnorm: Boolean(loudSel),
+            hasVolume: Boolean(volInput),
+            hasChannels: Boolean(chSel),
+            monoSelected: chSel ? chSel.value === 'mono' : false,
+            persistsAfterSwitch: chSel2 ? chSel2.value === 'mono' : false,
+            error: '',
+          };
+        } catch (e) {
+          return { ...blank, error: String(e) };
+        }
+      })()`,
+    );
+    extraChecks.push([
+      '音频处理：提供响度归一化 / 音量增益 / 声道三项（且改动跨文件保留）',
+      audioUi.hasLoudnorm && audioUi.hasVolume && audioUi.hasChannels && audioUi.monoSelected && audioUi.persistsAfterSwitch,
+      audioUi.error
+        ? `执行出错：${audioUi.error}`
+        : `响度=${audioUi.hasLoudnorm} 增益=${audioUi.hasVolume} 声道=${audioUi.hasChannels}；切文件后仍为单声道=${audioUi.persistsAfterSwitch}`,
+    ]);
+
+    /*
+     * 字幕烧录（hardcode）—— 需要一个**带字幕**的素材，所以这里单独加载 subs-multi.mkv，
+     * 测完再把它从列表里移除，不影响后面的转换用例（那边要求只剩 1 个文件）。
+     *
+     * 判据两条：
+     *   ① 字幕区出现「烧进画面」单选组（不烧录 + 每条字幕各一个）；
+     *   ② 选了烧录之后再改成"直通"，必须在**改参数的当下**就给出 block 级警告 ——
+     *      而不是等用户点了"开始转换"才报错（那正是"转完才发现白转"）。
+     */
+    const subsSample = path.join(smokeAssetsDir(), 'samples', 'subs-multi.mkv');
+    if (existsSync(subsSample)) {
+      await evalJs<boolean>(
+        '加载带字幕的素材',
+        `(async () => {
+          window.__lumenAddFiles(${JSON.stringify([subsSample])});
+          return true;
+        })()`,
+      );
+      await shotDelay(1600);
+      await evalJs<boolean>(
+        '切到带字幕的文件',
+        `(() => {
+          const cards = [...document.querySelectorAll('.file-card')];
+          const last = cards[cards.length - 1];
+          if (last) last.click();
+          return true;
+        })()`,
+      );
+      await shotDelay(420);
+
+      const burnUi = await evalJs<{
+        hasBurnGroup: boolean;
+        radioCount: number;
+        canSelect: boolean;
+        infoShown: boolean;
+        infoText: string;
+        error: string;
+      }>(
+        '验证字幕烧录控件',
+        `(async () => {
+          const tick = () => new Promise((r) => setTimeout(r, 320));
+          const blank = { hasBurnGroup: false, radioCount: 0, canSelect: false, infoShown: false, infoText: '', error: '' };
+          try {
+            const group = document.querySelector('.burn-group');
+            if (!group) return { ...blank, error: '未找到「烧进画面」分组' };
+            const radios = [...group.querySelectorAll('input[type="radio"]')];
+
+            // 选第一条字幕做烧录
+            const burnOne = radios[1];
+            let canSelect = false;
+            if (burnOne) {
+              burnOne.click();
+              await tick();
+              canSelect = radios[1].checked;
+            }
+
+            /*
+             * 断言兼容性预检**跟着烧录选择联动**。
+             *
+             * 这里查的是 info 级那条（"字幕「X」会被烧进画面"）而不是 block 级：
+             * block 级（直通不能烧录）需要 videoCodecId 真的变成 copy，
+             * 而当前用途「发微信 / QQ」有 H.264 硬约束，选直通预设也会被约束成 h264
+             * （choosePreset 里那条"用途有编码器硬约束时仍然遵守约束"是刻意设计）。
+             * 所以 block 规则本身由命令层的三条检查覆盖，这里只验证界面接线。
+             *
+             * ⚠ 这段是模板字面量：注释里**不能出现反引号**（D-019 记过这个坑，本轮又踩了一次）。
+             */
+            const infoItem = [...document.querySelectorAll('.compat-item.alert-info')].find((el) =>
+              (el.textContent ?? '').includes('烧进画面'),
+            );
+            const infoText = (infoItem?.textContent ?? '').replace(/\\s+/g, ' ').trim().slice(0, 80);
+
+            // 复原：取消烧录
+            if (radios[0]) {
+              radios[0].click();
+              await tick();
+            }
+            return {
+              hasBurnGroup: true,
+              radioCount: radios.length,
+              canSelect,
+              infoShown: infoText.length > 0,
+              infoText,
+              error: '',
+            };
+          } catch (e) {
+            return { ...blank, error: String(e) };
+          }
+        })()`,
+      );
+      extraChecks.push(
+        [
+          '字幕烧录：提供「烧进画面」单选组（不烧录 + 每条字幕各一项）',
+          burnUi.hasBurnGroup && burnUi.radioCount >= 2 && burnUi.canSelect,
+          burnUi.error
+            ? `执行出错：${burnUi.error}`
+            : `单选数=${burnUi.radioCount}，可选中=${burnUi.canSelect}`,
+        ],
+        [
+          '字幕烧录：兼容性预检跟着烧录选择联动（当场说明代价，不用等转换）',
+          burnUi.infoShown,
+          burnUi.infoText || '（预检区没有出现烧录说明）',
+        ],
+      );
+
+      // 移除这个临时素材，后面的用例仍然只有 1 个文件
+      await evalJs<boolean>(
+        '移除带字幕的素材',
+        `(() => {
+          const cards = [...document.querySelectorAll('.file-card')];
+          const last = cards[cards.length - 1];
+          if (last) last.querySelector('.file-remove')?.click();
+          return true;
+        })()`,
+      );
+      await shotDelay(400);
+    } else {
+      extraChecks.push([
+        '字幕烧录相关检查能跑起来（需要 subs-multi.mkv）',
+        false,
+        `样本不存在：${subsSample}。请先跑 npm run samples，或给打包态加 --smoke-assets=`,
+      ]);
+    }
+
+    /*
+     * 回到推荐模式：后面「模式切换」那一组要求从推荐模式开始。
+     *
+     * 顺带点一下第一张用途卡片把参数复位 —— 前面几组检查动过格式/分辨率，
+     * 不复位的话「参数已偏离推荐值」提示会一直挂着，把首屏撑长（实测就这么
+     * 让"兼容性预检"掉到折叠线以下，害得后面的断言失败）。
+     */
+    await evalJs<boolean>(
+      '切回推荐模式并复位用途参数（音频/字幕检查结束）',
+      `(async () => {
+        const tick = () => new Promise((r) => setTimeout(r, 320));
+        const btns = [...document.querySelectorAll('.mode-btn')];
+        if (btns[0]) btns[0].click();
+        await tick();
+        const first = document.querySelector('.usecase-card');
+        if (first) first.click();
+        await tick();
+        return true;
+      })()`,
+    );
+    await shotDelay(250);
+
+    /*
      * 模式切换：推荐（大众）/ 自定义（专业）。
      *
      * 起因：用户反馈"很奇怪" —— 原来把用途卡片和一大堆专业参数堆在同一个面板里，

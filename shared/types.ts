@@ -5,6 +5,13 @@
 
 import type { FitMode } from './output-size';
 
+/**
+ * 音频声道处理方式。
+ * 'source' 保持原样；'mono' 混成单声道（体积更小、人声内容够用）；
+ * 'stereo' 统一成立体声（把 5.1 下混，兼容性最好）。
+ */
+export type AudioChannelMode = 'source' | 'mono' | 'stereo';
+
 /* ------------------------------------------------------------------ *
  * 视频信息探测（ffprobe）
  * ------------------------------------------------------------------ */
@@ -299,6 +306,26 @@ export interface ConversionOptions {
   trimEndSec: number | null;
   /** 保留的字幕流 index 列表（空数组表示不保留） */
   subtitleStreamIndexes: number[];
+  /**
+   * 要**烧进画面**的字幕流 index（全局流序号）；null = 不烧录。
+   *
+   * 为什么需要：勾选"保留字幕轨"只是把字幕当作可选轨道封装进去，
+   * 很多播放器/设备默认不显示（尤其电视和手机），对方看到的还是没字幕。
+   * 烧录（hardcode）会把字幕画进像素里，任何设备都看得到 —— 代价是必须重新编码视频、
+   * 且烧上去就关不掉了。见 `shared/subtitle-burn.ts` 与 DECISIONS.md D-022。
+   */
+  burnSubtitleIndex: number | null;
+  /**
+   * 音频响度归一化（EBU R128）。
+   *
+   * 自媒体/课堂录音最常见的需求：不同片源音量忽大忽小，发出去对方要不停调音量。
+   * 目标是 -16 LUFS / 真峰 -1.5 dBTP，符合网络投放的通行做法。
+   */
+  audioLoudnorm: boolean;
+  /** 音量增益（dB），负数为减小；null = 不调整。范围 -30 ~ +30 */
+  audioVolumeDb: number | null;
+  /** 声道转换：'source' 保持 / 'mono' 单声道 / 'stereo' 立体声 */
+  audioChannels: AudioChannelMode;
   /** 保留的音轨 index 列表（空数组表示使用默认音轨） */
   audioStreamIndexes: number[];
 }

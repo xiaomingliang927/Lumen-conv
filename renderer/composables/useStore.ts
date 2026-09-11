@@ -82,6 +82,12 @@ export const options = ref<ConversionOptions>({
   useCaseId: 'wechat',
   // 画面比例默认**保持原样**：补黑边/裁剪都是用户看得见的画面损失，必须是显式选择
   fitMode: 'off',
+  // 字幕默认既不保留也不烧录（烧录会强制重编码，不能默认开）
+  burnSubtitleIndex: null,
+  // 音频处理默认全关：不动用户的原始音频是最安全的默认值
+  audioLoudnorm: false,
+  audioVolumeDb: null,
+  audioChannels: 'source',
   outputDir: null,
   fileNameTemplate: '{name}',
   overwrite: false,

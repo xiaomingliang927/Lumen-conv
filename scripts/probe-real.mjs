@@ -326,6 +326,41 @@ if (doConvert) {
       expect: '360p 源 + 1080p 上限 + 竖屏 → 360×640（不放大）',
       verify: (p) => p.video[0].displayWidth === 360 && p.video[0].displayHeight === 640,
     },
+    /*
+     * 字幕烧录（hardcode）—— 用真实的内嵌字幕素材跑一遍。
+     *
+     * 判据是"产物里**没有**字幕流，但视频还在"：
+     * 烧录意味着字幕进了像素、不再是可选轨道。如果 subtitles 滤镜失败（路径转义写错是常事），
+     * ffmpeg 会直接报错、产物生不出来，这条用例就会失败。
+     */
+    {
+      file: 'subs-multi.mkv',
+      options: { ...baseOptions, presetId: 'mp4-compatible' },
+      burnFirstSubtitle: true,
+      outFile: 'subs-burned.mp4',
+      expect: '第一条字幕烧进画面（产物不再带字幕流）',
+      verify: (p) => p.hasVideo && p.subtitle.length === 0,
+    },
+    /*
+     * 音频处理：响度归一化 + 音量增益 + 单声道，三者叠加跑一遍真转码。
+     * 判据：音频还在、时长没变、声道确实变成 1。
+     */
+    {
+      file: 'sample-h264.mp4',
+      options: {
+        ...baseOptions,
+        videoCodecId: 'none',
+        presetId: 'audio-m4a',
+        // 与上面那条音频用例保持一致：音频容器不要视频轨时用 null（不是 'none'）
+        videoCodecId: null,
+        audioLoudnorm: true,
+        audioVolumeDb: -3,
+        audioChannels: 'mono',
+      },
+      outFile: 'audio-loudnorm.m4a',
+      expect: '响度归一化 + -3dB + 单声道',
+      verify: (p) => p.hasAudio && p.audio[0]?.channels === 1 && p.durationSec > 5,
+    },
     {
       file: 'sample-hevc.mkv',
       options: { ...baseOptions },
@@ -358,7 +393,9 @@ if (doConvert) {
     // 需要保留字幕的用例：把探测到的字幕轨索引填进去（默认是空数组 = 不保留）
     const options = item.subtitleIndexesFromProbe
       ? { ...item.options, subtitleStreamIndexes: probe.subtitle.map((s) => s.index) }
-      : item.options;
+      : item.burnFirstSubtitle
+        ? { ...item.options, burnSubtitleIndex: probe.subtitle[0]?.index ?? null }
+        : item.options;
 
     const built = mods.commands.buildCommand(options, { probe, outputPath: out });
     const t0 = Date.now();

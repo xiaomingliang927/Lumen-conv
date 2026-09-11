@@ -43,7 +43,7 @@ import {
   availableVideoCodecs,
   predictedOutput,
 } from '@/composables/useStore';
-import type { ConversionOptions } from '@shared/types';
+import type { ConversionOptions, AudioChannelMode } from '@shared/types';
 import { CONTAINERS, VIDEO_CODECS, AUDIO_CODECS } from '@shared/presets';
 import { DEVICES, USE_CASES, findDevice, findUseCase } from '@shared/use-cases';
 import { FIT_MODES, planOutputSize } from '@shared/output-size';
@@ -267,6 +267,16 @@ const planSummary = computed(() => {
   if (options.value.sizeLimitMb) parts.push(`≤${options.value.sizeLimitMb} MB`);
   return { useCase: uc?.label ?? '自定义组合', detail: parts.join(' · ') };
 });
+
+/** 音量增益输入：空 / 非数字 / 0 都视为"不调整" */
+function setAudioVolume(raw: string): void {
+  const n = Number(raw);
+  if (raw.trim() === '' || !Number.isFinite(n) || n === 0) {
+    setGlobal({ audioVolumeDb: null });
+    return;
+  }
+  setGlobal({ audioVolumeDb: Math.max(-30, Math.min(30, Math.round(n))) });
+}
 
 /**
  * 这次**实际会输出多大**（以及为什么）。
@@ -628,7 +638,75 @@ void VIDEO_CODECS;
             </label>
           </div>
 
-          <!-- 字幕 -->
+          <!--
+            音频处理（响度归一化 / 音量 / 声道）。
+            只在真的能重新编码音频时显示：直通（copy）和"移除音频"下这些滤镜没有意义。
+          -->
+          <div v-if="probe.hasAudio && !isRemux && eff.audioCodecId !== 'none'" class="field">
+            <span class="field-label">音频处理</span>
+            <div class="field-grid">
+              <label class="field">
+                <span class="field-label">响度归一化</span>
+                <select
+                  class="select"
+                  :value="eff.audioLoudnorm ? 'on' : 'off'"
+                  @change="setGlobal({ audioLoudnorm: ($event.target as HTMLSelectElement).value === 'on' })"
+                >
+                  <option value="off">关闭 — 保持原音量</option>
+                  <option value="on">开启 — 统一到 -16 LUFS</option>
+                </select>
+                <span class="field-hint">
+                  多个片源音量忽大忽小时用它；按 EBU R128 把整体响度拉齐，听的人不用来回调音量
+                </span>
+              </label>
+
+              <label class="field">
+                <span class="field-label">音量增益</span>
+                <div class="size-limit">
+                  <input
+                    class="input mono"
+                    type="number"
+                    min="-30"
+                    max="30"
+                    step="1"
+                    placeholder="0"
+                    :value="eff.audioVolumeDb ?? ''"
+                    @input="setAudioVolume(($event.target as HTMLInputElement).value)"
+                  />
+                  <span class="muted">dB</span>
+                  <button
+                    v-if="eff.audioVolumeDb"
+                    class="btn btn-sm btn-ghost"
+                    title="回到不增不减"
+                    @click="setGlobal({ audioVolumeDb: null })"
+                  >
+                    归零
+                  </button>
+                </div>
+                <span class="field-hint">先加/减音量，再做响度归一化（顺序就是这样，后者会拉平前者）</span>
+              </label>
+
+              <label class="field">
+                <span class="field-label">声道</span>
+                <select
+                  class="select"
+                  :value="eff.audioChannels ?? 'source'"
+                  @change="setGlobal({ audioChannels: ($event.target as HTMLSelectElement).value as AudioChannelMode })"
+                >
+                  <option value="source">保持原样</option>
+                  <option value="mono">单声道 — 体积更小，人声够用</option>
+                  <option value="stereo">立体声 — 5.1 下混，兼容性最好</option>
+                </select>
+              </label>
+            </div>
+          </div>
+
+          <!--
+            字幕：两种完全不同的用法，所以分成两组说清楚 ——
+              · 「保留为字幕轨」= 封装进去，设备能不能显示看播放器（默认不保留）
+              · 「烧进画面」= 画进像素里，任何设备都看得到，但必须重新编码且不可撤销
+            见 shared/subtitle-burn.ts 与 DECISIONS.md D-022。
+          -->
           <div v-if="probe.subtitle.length" class="field">
             <span class="field-label">字幕轨道</span>
             <div class="check-list">
@@ -654,6 +732,50 @@ void VIDEO_CODECS;
             <span class="field-hint">
               默认不保留字幕。MP4 只支持文字字幕；图形字幕（PGS/VobSub）请选择 MKV 输出。
             </span>
+
+            <!--
+              烧录（hardcode）：单选，因为只能烧一条，而且烧上去就关不掉。
+              它和上面的"保留字幕轨"是两件事，所以单独一组、单独解释。
+            -->
+            <div class="burn-group">
+              <span class="field-label burn-label">
+                烧进画面（hardcode）
+                <span class="chip chip-accent">会重新编码视频</span>
+              </span>
+              <div class="check-list">
+                <label class="check-item">
+                  <input
+                    type="radio"
+                    name="burn-sub"
+                    :checked="!eff.burnSubtitleIndex && eff.burnSubtitleIndex !== 0"
+                    @change="setGlobal({ burnSubtitleIndex: null })"
+                  />
+                  <span class="check-label">不烧录<small class="muted">（字幕只作为可选轨道）</small></span>
+                </label>
+                <label
+                  v-for="s in probe.subtitle"
+                  :key="`burn-${s.index}`"
+                  class="check-item"
+                  :class="{ disabled: !s.isTextBased }"
+                >
+                  <input
+                    type="radio"
+                    name="burn-sub"
+                    :checked="eff.burnSubtitleIndex === s.index"
+                    :disabled="!s.isTextBased"
+                    @change="setGlobal({ burnSubtitleIndex: s.index })"
+                  />
+                  <span class="check-label">
+                    烧录 {{ s.title || languageName(s.language) || `轨道 #${s.index}` }}
+                    <span v-if="!s.isTextBased" class="chip chip-accent">图形字幕无法烧录</span>
+                  </span>
+                </label>
+              </div>
+              <span class="field-hint">
+                烧录后字幕成为画面的一部分：**任何设备都能看到**，对方也关不掉。
+                代价是视频必须重新编码（直通模式会被拦下），且画质会有一次重编码损失。
+              </span>
+            </div>
           </div>
 
           <!-- 裁剪 -->

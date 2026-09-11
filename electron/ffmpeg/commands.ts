@@ -26,6 +26,7 @@ import {
   findVideoCodec,
 } from '../../shared/presets';
 import { planOutputSize } from '../../shared/output-size';
+import { burnSubtitleFilter, subtitleStreamOrdinal } from '../../shared/subtitle-burn';
 
 export interface BuildContext {
   probe: MediaProbeResult;
@@ -210,6 +211,8 @@ function buildVideoArgs(
   resolutionHeight: number | null,
   /** 目标体积下的视频码率预算；null = 按质量档（CRF）走 */
   sizeBudget: SizeBudget | null,
+  /** 已拼好的字幕烧录滤镜（在 buildCommand 里算，那里才有完整 probe）；null = 不烧录 */
+  burnFilter: string | null,
 ): VideoPlan {
   const codecId = options.videoCodecId;
   const encoder = VIDEO_ENCODER_NAME[codecId];
@@ -307,6 +310,16 @@ function buildVideoArgs(
   // 像素格式：H.264/H.265 输出 yuv420p 才能被绝大多数设备播放
   const needsPixFmt = ['h264', 'hevc', 'h264_nvenc', 'hevc_nvenc', 'mpeg4'].includes(codecId);
   const pixFmt = tenBitTarget && source.bitDepth >= 10 ? 'yuv420p10le' : 'yuv420p';
+
+  /*
+   * 字幕烧录放在**滤镜链最后**：先缩放/补边/裁切，再把字幕画上去。
+   * 反过来的话字幕会跟着画面一起被缩放，字号变得不可控（小分辨率下糊成一团）。
+   * 路径转义见 shared/subtitle-burn.ts —— 那是 ffmpeg 的经典坑，规则写在一处。
+   */
+  if (burnFilter) {
+    filters.push(burnFilter);
+    notes.push('字幕已烧进画面（任何设备都能看到，但画质有一次重编码损失）');
+  }
 
   if (filters.length > 0) {
     args.push('-vf', filters.join(','));
@@ -442,8 +455,44 @@ function buildAudioArgs(
   const args = ['-c:a', encoder];
   const channels = probe.audio[0]?.channels ?? 2;
 
-  // 声道数处理：AC3/EAC3 保留 5.1，其余下混成立体声（手机/耳机场景下更有意义）
-  if (codecId === 'ac3' || codecId === 'eac3') {
+  /*
+   * 音频滤镜链（2026-09 新增，见 DECISIONS.md D-022）。
+   *
+   * 顺序很重要：**先调音量，再做响度归一化**。
+   * 反过来的话，loudnorm 会把刚调好的增益重新"拉平"，用户手动加的音量等于白调。
+   *
+   * 另外 loudnorm 是单遍（single-pass）实现：精度略低于双遍，但不需要跑两遍音频分析，
+   * 换算到界面上"改一下就重转"的场景更合适；双遍版本要把第一遍的测量结果再喂回去，
+   * 复杂度与收益不成比例。
+   */
+  const audioFilters: string[] = [];
+  if (options.audioVolumeDb !== null && Number.isFinite(options.audioVolumeDb) && options.audioVolumeDb !== 0) {
+    const db = Math.max(-30, Math.min(30, options.audioVolumeDb));
+    audioFilters.push(`volume=${db}dB`);
+    notes.push(`音量${db > 0 ? '提高' : '降低'} ${Math.abs(db)} dB`);
+  }
+  if (options.audioLoudnorm) {
+    audioFilters.push('loudnorm=I=-16:TP=-1.5:LRA=11');
+    notes.push('已启用响度归一化（EBU R128，目标 -16 LUFS），不同片源音量会趋于一致');
+  }
+  if (audioFilters.length > 0) args.push('-af', audioFilters.join(','));
+
+  /*
+   * 声道处理：
+   *   source → 沿用原有逻辑（AC3/EAC3 保 5.1，其余 >2 声道下混立体声）
+   *   mono   → 显式 -ac 1
+   *   stereo → 显式 -ac 2（把 5.1 下混，兼容性最好）
+   * 用户显式选择优先于自动推断，但要在 notes 里说清楚发生了什么。
+   */
+  const channelMode = options.audioChannels ?? 'source';
+  if (channelMode === 'mono') {
+    args.push('-ac', '1');
+    if (channels > 1) notes.push(`音轨从 ${channels} 声道混为单声道`);
+  } else if (channelMode === 'stereo') {
+    args.push('-ac', '2');
+    if (channels > 2) notes.push(`音轨从 ${channels} 声道下混为立体声`);
+  } else if (codecId === 'ac3' || codecId === 'eac3') {
+    // 声道数处理：AC3/EAC3 保留 5.1，其余下混成立体声（手机/耳机场景下更有意义）
     if (channels > 2) args.push('-ac', String(Math.min(channels, 6)));
   } else if (channels > 2) {
     args.push('-ac', '2');
@@ -639,7 +688,47 @@ export function buildCommand(options: ConversionOptions, ctx: BuildContext): Bui
     if (!source) {
       throw new CommandBuildError('源文件没有视频轨道', 'invalid-input', '请改用「导出音频」类预设');
     }
-    videoPlan = buildVideoArgs(options, container, source, quality, resolution.height, sizeBudget);
+    /*
+     * 字幕烧录的合法性在这里判定（这里有完整 probe）。
+     * 两道拦截都是"转完才发现白转"的典型，所以放在构建期就抛人话错误：
+     *   ① 直通（copy）不能烧录 —— 不重新编码就没法改像素；
+     *   ② 图形字幕（PGS / VobSub）不能烧录 —— 需要图片序列重编码，本工具不支持。
+     */
+    let burnFilter: string | null = null;
+    const burnIndex = options.burnSubtitleIndex;
+    if (burnIndex !== null && burnIndex !== undefined) {
+      if (options.videoCodecId === 'copy') {
+        throw new CommandBuildError(
+          '「只换容器（直通）」不能烧录字幕',
+          'unsupported-codec',
+          '烧录会把字幕画进画面，必须重新编码视频；请改用会重新编码的预设（如「MP4 通用兼容」），或把烧录改成「保留字幕轨」',
+        );
+      }
+      const target = probe.subtitle.find((s) => s.index === burnIndex);
+      if (!target) {
+        throw new CommandBuildError(
+          '要烧录的字幕轨不存在',
+          'unsupported-codec',
+          '请重新选择字幕轨道，或改成「保留字幕轨」',
+        );
+      }
+      if (!target.isTextBased) {
+        throw new CommandBuildError(
+          `图形字幕（${target.codec}）无法烧录`,
+          'unsupported-codec',
+          'PGS / VobSub 这类图形字幕需要先转成图片序列才能烧录，本工具暂不支持；请改用「保留字幕轨」并输出 MKV',
+        );
+      }
+      burnFilter = burnSubtitleFilter(
+        probe.path,
+        subtitleStreamOrdinal(
+          probe.subtitle.map((s) => s.index),
+          burnIndex,
+        ),
+      );
+    }
+
+    videoPlan = buildVideoArgs(options, container, source, quality, resolution.height, sizeBudget, burnFilter);
     if (videoPlan.verify) {
       // 直通时的容器兼容性预检失败：立刻抛出人话错误，别让用户等到最后才失败
       throw new CommandBuildError(

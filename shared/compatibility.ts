@@ -120,6 +120,48 @@ export function checkCompatibility(ctx: CheckContext): CompatibilityIssue[] {
 
   /* ---------- 2. 换壳（直通）可行性 ---------- */
 
+  /*
+   * 字幕烧录的前置校验（2026-09 新增，见 DECISIONS.md D-022）。
+   *
+   * 主进程的 buildCommand 也会拦这两条，但那是**点下"开始转换"之后**才报；
+   * 放在这里是为了让用户在改参数的当下就看见红条 —— "转完才发现白转"正是本模块存在的理由。
+   */
+  const burnIndex = options.burnSubtitleIndex;
+  if (burnIndex !== null && burnIndex !== undefined) {
+    const target = probe.subtitle.find((s) => s.index === burnIndex);
+    if (vFamily === 'copy') {
+      issues.push({
+        level: 'block',
+        message: '「只换容器（直通）」不能烧录字幕',
+        suggestion:
+          '烧录会把字幕画进画面，必须重新编码视频。请改用会重新编码的格式（如「MP4 通用兼容」），或把烧录改成「保留字幕轨」',
+        fix: { videoCodecId: 'h264' },
+      });
+    } else if (!target) {
+      issues.push({
+        level: 'block',
+        message: '要烧录的字幕轨不存在',
+        suggestion: '请重新选择字幕轨道',
+        fix: { burnSubtitleIndex: null },
+      });
+    } else if (!target.isTextBased) {
+      issues.push({
+        level: 'block',
+        message: `图形字幕（${target.codec}）无法烧录`,
+        suggestion:
+          'PGS / VobSub 这类图形字幕要先转成图片序列才能烧录，本工具暂不支持。请改用「保留字幕轨」并输出 MKV',
+        fix: { burnSubtitleIndex: null },
+      });
+    } else {
+      issues.push({
+        level: 'info',
+        message: `字幕「${target.title || target.language || `轨道 #${target.index}`}」会被烧进画面`,
+        suggestion: '任何设备都能看到，但对方关不掉，且视频必须重新编码一次',
+        fix: null,
+      });
+    }
+  }
+
   if (isRemux) {
     const srcVideo = probe.video.find((v) => !v.isAttachedPic);
     if (srcVideo && !isCodecAllowed(srcVideo.codec, containerDef.id)) {

@@ -144,6 +144,26 @@ function smokeBaseDir(): string {
 }
 
 /**
+ * 自检用的测试素材目录。
+ *
+ * 默认是 `<smokeBaseDir()>/test-assets`，可用 `--smoke-assets=<目录>` 覆盖。
+ *
+ * 为什么需要这个开关：打包态的可执行文件旁边**没有** `test-assets/`
+ * （测试素材不该塞进分发包，那是 26 MB 的无用负担）。而没有这个开关时，
+ * 依赖第二个样本的 8 项检查在打包态会**静默跳过**，摘要照样打印"全部通过"——
+ * 于是"开发态 66 项 / 打包态 58 项"这个覆盖差异三轮都没人发现。
+ * 显式传目录之后，打包态也能跑满全部检查。
+ */
+function smokeAssetsDir(): string {
+  const arg = process.argv.find((a) => a.startsWith('--smoke-assets='));
+  if (arg) {
+    const p = arg.slice('--smoke-assets='.length);
+    return path.isAbsolute(p) ? p : path.join(smokeBaseDir(), p);
+  }
+  return path.join(smokeBaseDir(), 'test-assets');
+}
+
+/**
  * `electron . --smoke` 模式：启动真实窗口、截图、并用 JS 检查关键元素是否渲染成功。
  *
  * 为什么要有它：笔试要求第 7 条明确说「不能连自己都没测试过」。
@@ -370,7 +390,12 @@ async function runSmokeCheck(): Promise<void> {
     for (;;) {
       loaded = await evalJs<boolean>(
         '等待视频信息与缩略图',
-        `Boolean(document.querySelector('.details .info-grid') && document.querySelector('.file-card .thumb img'))`,
+        // 视频信息默认是收起的摘要，所以判据用「摘要或详情表任一存在」，
+        // 不能只等 .info-grid（收起时它根本不在 DOM 里）
+        `Boolean(
+          (document.querySelector('.details .info-summary') || document.querySelector('.details .info-grid')) &&
+          document.querySelector('.file-card .thumb img')
+        )`,
       );
       if (loaded || Date.now() > fileDeadline) break;
       await shotDelay(400);
@@ -386,6 +411,7 @@ async function runSmokeCheck(): Promise<void> {
       activeUseCase: string;
       compatItems: number;
       estimate: string;
+      summaryText: string;
     }>(
       '采集视频详情特征',
       `(() => {
@@ -401,12 +427,17 @@ async function runSmokeCheck(): Promise<void> {
         activeUseCase: text('.usecase-card.active .usecase-label'),
         compatItems: document.querySelectorAll('.compat-item').length,
         estimate: text('.details-foot .foot-estimate'),
+        summaryText: text('.details .info-summary'),
       };
     })()`,
     );
 
     extraChecks.push(
-      ['加载真实文件后：信息面板出现', fileReport.infoRows.length >= 5, `${fileReport.infoRows.length} 行`],
+      [
+        '加载真实文件后：视频信息摘要已显示（收起态）',
+        fileReport.summaryText.length > 0,
+        fileReport.summaryText.slice(0, 70) || '（摘要为空）',
+      ],
       ['加载真实文件后：缩略图已生成', fileReport.thumbSrc.startsWith('lumen-media://'), fileReport.thumbSrc.slice(0, 46) + '…'],
       ['加载真实文件后：时长角标显示', /^\d+:\d{2}$/.test(fileReport.durationBadge), fileReport.durationBadge],
       [
@@ -423,12 +454,43 @@ async function runSmokeCheck(): Promise<void> {
       ],
       ['加载真实文件后：产物体积预估显示', fileReport.estimate.includes('预计'), fileReport.estimate || '无'],
       [
-        '加载真实文件后：详情包含分辨率',
-        fileReport.infoRows.some((r) => /画面=\d+×\d+/.test(r)),
-        fileReport.infoRows.find((r) => r.startsWith('画面')) ?? '未找到',
+        '加载真实文件后：分辨率/编码显示在摘要里',
+        /\d+×\d+/.test(fileReport.summaryText) && /H\.?26\d/i.test(fileReport.summaryText),
+        fileReport.summaryText.slice(0, 70) || '未找到',
       ],
       ['加载真实文件后：截图已生成', existsSync(path.join(outDir, 'main-with-file.png')), 'main-with-file.png'],
     );
+
+    /*
+     * 展开视频信息后应能看到完整明细表（收起态只有一行摘要）。
+     * 顺便验证这个折叠交互本身可用。
+     */
+    const infoExpand = await evalJs<{ rows: number; collapsedAgain: boolean; error: string }>(
+      '验证视频信息折叠展开',
+      `(async () => {
+        const tick = () => new Promise((r) => setTimeout(r, 240));
+        try {
+          const toggle = document.querySelector('.info-toggle');
+          if (!toggle) return { rows: -1, collapsedAgain: false, error: '未找到信息折叠按钮' };
+          toggle.click();
+          await tick();
+          const rows = document.querySelectorAll('.details .info-row').length;
+          toggle.click();
+          await tick();
+          const collapsedAgain = Boolean(document.querySelector('.details .info-summary'));
+          return { rows, collapsedAgain, error: '' };
+        } catch (e) {
+          return { rows: -1, collapsedAgain: false, error: String(e) };
+        }
+      })()`,
+    );
+    extraChecks.push([
+      '视频信息：可展开看完整明细（收起态只有一行摘要）',
+      infoExpand.rows >= 5 && infoExpand.collapsedAgain,
+      infoExpand.error
+        ? `执行出错：${infoExpand.error}`
+        : `展开后 ${infoExpand.rows} 行明细，收起后回到摘要`,
+    ]);
 
     /*
      * 预设卡片「真的能点」的交互验证。
@@ -550,7 +612,7 @@ async function runSmokeCheck(): Promise<void> {
      *
      * 起因：用户反馈"很奇怪" —— 原来把用途卡片和一大堆专业参数堆在同一个面板里，
      * 大众用户被淹没。现在分两个模式：推荐模式隐藏全部专业参数，自定义模式才展开。
-     * 这里验证：① 推荐模式下没有高级选项；② 切到自定义后出现；
+     * 这里验证：① 推荐模式下没有专业参数；② 切到自定义后出现；
      * ③ 模式选择会持久化（settings.appMode）。
      */
     const modeSwitch = await evalJs<{
@@ -619,13 +681,13 @@ async function runSmokeCheck(): Promise<void> {
         '推荐模式：隐藏全部专业参数（大众用户不被淹没）',
         !modeSwitch.recommendedHasAdvanced,
         modeSwitch.recommendedHasAdvanced
-          ? `推荐模式下仍出现「高级选项」（存储值=${modeSwitch.storedMode}，高亮=${modeSwitch.activeBtn}）`
-          : '推荐模式下无高级选项',
+          ? `推荐模式下仍出现「专业参数」（存储值=${modeSwitch.storedMode}，高亮=${modeSwitch.activeBtn}）`
+          : '推荐模式下无专业参数',
       ],
       [
-        '自定义模式：展开专业参数',
+        '自定义模式：出现专业参数入口',
         modeSwitch.customHasAdvanced,
-        modeSwitch.customHasAdvanced ? '出现「高级选项」' : '切到自定义后仍无高级选项',
+        modeSwitch.customHasAdvanced ? '出现「专业参数」' : '切到自定义后仍无专业参数',
       ],
       [
         '切回推荐模式：专业参数重新隐藏',
@@ -633,6 +695,133 @@ async function runSmokeCheck(): Promise<void> {
         modeSwitch.backToRecommended ? '已隐藏' : '仍显示',
       ],
     );
+
+    /*
+     * 两种模式各截一张图，并量化"可见区块"的差异。
+     *
+     * 起因：用户反馈"推荐设置和自定义没区别啊"。
+     * 光断言 .advanced-toggle 的存在与否看不出真实观感 —— 需要把两种模式的
+     * 首屏内容都记录下来，才知道用户实际看到的是什么。
+     */
+    const modeShots: { mode: string; blocks: string[]; scrollH: number; viewH: number }[] = [];
+    for (const [idx, modeName] of [
+      [0, 'recommended'],
+      [1, 'custom'],
+    ] as [number, string][]) {
+      await evalJs<boolean>(
+        `切到 ${modeName} 模式`,
+        `(async () => {
+          const btns = [...document.querySelectorAll('.mode-btn')];
+          if (btns[${idx}]) btns[${idx}].click();
+          await new Promise((r) => setTimeout(r, 380));
+          return true;
+        })()`,
+      );
+      await shotDelay(350);
+      const info = await evalJs<{ blocks: string[]; scrollH: number; viewH: number }>(
+        `记录 ${modeName} 模式的内容`,
+        `(() => {
+          /*
+           * 区块标题：优先 h4；专业参数区块没有 h4，取开关按钮里的**直接文本节点**。
+           * 不能直接用 textContent —— 那会把后面"格式 / 编码器 / ..."那段灰色说明
+           * 一起拼进标题里，日志变成"专业参数格式 / 编码器"，读起来很费劲。
+           */
+          const titleOf = (b) => {
+            const h4 = b.querySelector('h4');
+            if (h4) return h4.textContent.trim();
+            const tg = b.querySelector('.advanced-toggle');
+            if (tg) {
+              const direct = [...tg.childNodes]
+                .filter((n) => n.nodeType === 3)
+                .map((n) => n.textContent)
+                .join('')
+                .trim();
+              if (direct) return direct;
+              return tg.textContent.replace(/\\s+/g, ' ').trim().slice(0, 6);
+            }
+            return '(无标题)';
+          };
+          const blocks = [...document.querySelectorAll('.details .block')].map((b) => {
+            const r = b.getBoundingClientRect();
+            return titleOf(b) + '@' + Math.round(r.top) + (r.bottom > window.innerHeight ? '(折叠线下)' : '');
+          });
+          const scroller = document.querySelector('.details-scroll');
+          return {
+            blocks,
+            scrollH: scroller ? Math.round(scroller.scrollHeight) : 0,
+            viewH: scroller ? Math.round(scroller.clientHeight) : 0,
+          };
+        })()`,
+      );
+      modeShots.push({ mode: modeName, ...info });
+      await capture(`mode-${modeName}.png`);
+    }
+
+    const rec = modeShots.find((m) => m.mode === 'recommended');
+    const cus = modeShots.find((m) => m.mode === 'custom');
+    extraChecks.push([
+      '两种模式的首屏内容确实不同（不是只藏了一个开关）',
+      Boolean(rec && cus && (rec.scrollH !== cus.scrollH || rec.blocks.length !== cus.blocks.length)),
+      `推荐：${rec?.blocks.length} 区块/内容高 ${rec?.scrollH}px；自定义：${cus?.blocks.length} 区块/内容高 ${cus?.scrollH}px`,
+    ]);
+    /*
+     * 首屏可见性断言。
+     *
+     * 之前的断言只比"内容总高度"，而用户抱怨的是"**看不出区别**" ——
+     * 差别全在折叠线下时，总高度确实不同，但用户在首屏看到的是一样的。
+     * 所以要断言的是"视口内（折叠线以上）有哪些区块"，这才是用户真正感知到的。
+     */
+    extraChecks.push([
+      '两种模式在首屏（折叠线以上）就有可见差别',
+      Boolean(
+        rec &&
+          cus &&
+          rec.blocks.filter((b) => !b.includes('折叠线下')).join() !==
+            cus.blocks.filter((b) => !b.includes('折叠线下')).join(),
+      ),
+      /*
+       * 两种模式的首屏都要打出来。
+       * 之前这里只打印推荐模式的首屏，"有差别"靠的是字符串比较通过 —— 等于让断言自己
+       * 证明自己，日志里看不到自定义模式首屏到底长什么样。证据必须能被人直接读出来。
+       */
+      `推荐首屏：${rec?.blocks.filter((b) => !b.includes('折叠线下')).join(' | ') || '（无）'}` +
+        ` ／ 自定义首屏：${cus?.blocks.filter((b) => !b.includes('折叠线下')).join(' | ') || '（无）'}`,
+    ]);
+    /*
+     * 这次改动的**目的**断言：
+     * 用户抱怨"推荐和自定义没区别"，根因是专业参数入口在折叠线以下（约 900px）。
+     * 所以必须直接断言"自定义模式下，专业参数入口出现在首屏"，而不是只看两种模式串是否不同。
+     */
+    extraChecks.push([
+      '自定义模式：专业参数入口出现在首屏（不用滚动就能看到）',
+      Boolean(cus && cus.blocks.some((b) => b.startsWith('专业参数') && !b.includes('折叠线下'))),
+      cus
+        ? cus.blocks.find((b) => b.startsWith('专业参数'))
+          ? `专业参数@${cus.blocks.find((b) => b.startsWith('专业参数'))?.split('@')[1]}`
+          : '首屏未找到专业参数入口'
+        : '未采集',
+    ]);
+    extraChecks.push([
+      '推荐模式：首屏能看到"用途"与"在哪播/多大体积"',
+      Boolean(
+        rec &&
+          rec.blocks.some((b) => b.includes('你要拿去干什么') && !b.includes('折叠线下')) &&
+          rec.blocks.some((b) => b.includes('在哪播') && !b.includes('折叠线下')),
+      ),
+      rec ? rec.blocks.join(' | ').slice(0, 140) : '未采集',
+    ]);
+
+    // 回到推荐模式，保持后续截图一致
+    await evalJs<boolean>(
+      '回到推荐模式',
+      `(async () => {
+        const btns = [...document.querySelectorAll('.mode-btn')];
+        if (btns[0]) btns[0].click();
+        await new Promise((r) => setTimeout(r, 360));
+        return true;
+      })()`,
+    );
+    await shotDelay(300);
 
     // 后面几组断言针对专业参数（编码器 / 格式下拉 / 命名下拉），必须先在自定义模式
     const enteredCustom = await evalJs<{ ok: boolean; activeBtn: string; hasAdvanced: boolean }>(
@@ -659,7 +848,7 @@ async function runSmokeCheck(): Promise<void> {
       enteredCustom.ok,
       enteredCustom.ok
         ? `当前高亮「${enteredCustom.activeBtn}」`
-        : `未能进入（高亮=${enteredCustom.activeBtn}，有高级选项入口=${enteredCustom.hasAdvanced}）`,
+        : `未能进入（高亮=${enteredCustom.activeBtn}，有专业参数入口=${enteredCustom.hasAdvanced}）`,
     ]);
     await shotDelay(300);
 
@@ -698,7 +887,7 @@ async function runSmokeCheck(): Promise<void> {
         try {
           const before = count();
 
-          // 1) 打开高级选项（编码器在里面）
+          // 1) 打开专业参数（编码器在里面）
           const adv = document.querySelector('.advanced-toggle');
           if (adv && !document.querySelector('.advanced-body')) adv.click();
           await tick();
@@ -782,7 +971,7 @@ async function runSmokeCheck(): Promise<void> {
 
 
     /*
-     * 「高级选项会不会影响上面的选择」——用户在界面上提出来的疑问，确实是个真 bug。
+     * 「专业参数会不会影响上面的选择」——用户在界面上提出来的疑问，确实是个真 bug。
      *
      * 原实现里手动改格式**不会清掉用途标记**，于是用途卡片继续高亮、
      * 继续显示该用途的提示，而实际参数已经不是那一套了 —— 卡片等于在说谎。
@@ -809,7 +998,7 @@ async function runSmokeCheck(): Promise<void> {
           if (adv && !document.querySelector('.advanced-body')) adv.click();
           await tick();
 
-          // 高级选项里的「输出格式」下拉（含 optgroup），切到 MKV 收藏
+          // 专业参数里的「输出格式」下拉（含 optgroup），切到 MKV 收藏
           const sel = [...document.querySelectorAll('.advanced-body select')].find(
             (s) => s.querySelector('optgroup')
           );
@@ -1059,14 +1248,14 @@ async function runSmokeCheck(): Promise<void> {
       await shotDelay(400);
 
       /*
-       * 展开「高级选项」单独截一张。
+       * 展开「专业参数」单独截一张。
        *
-       * 起因：用户在界面上反馈"很奇怪" —— 高级选项区域的布局是碎的。
+       * 起因：用户在界面上反馈"很奇怪" —— 专业参数区域的布局是碎的。
        * 折叠状态下截图看不到这一块，所以专门截一张展开态，让问题可见、
        * 也让后续修复有可比对的证据。
        */
       await evalJs<boolean>(
-        '展开高级选项',
+        '展开专业参数',
         `(() => {
           const adv = document.querySelector('.advanced-toggle');
           if (adv && !document.querySelector('.advanced-body')) adv.click();
@@ -1082,7 +1271,7 @@ async function runSmokeCheck(): Promise<void> {
         overflowW: boolean;
         widest: string;
       }>(
-        '检查高级选项布局',
+        '检查专业参数布局',
         `(() => {
           const body = document.querySelector('.advanced-body');
           if (!body) return { rows: 0, selects: 0, inputs: 0, overflowW: false, widest: '未展开' };
@@ -1101,13 +1290,13 @@ async function runSmokeCheck(): Promise<void> {
         })()`,
       );
       extraChecks.push([
-        '高级选项：展开后不横向溢出',
+        '专业参数：展开后不横向溢出',
         !advReport.overflowW,
         `${advReport.rows} 个字段、${advReport.selects} 个下拉，最宽元素 ${advReport.widest}，面板宽 ${(advReport as unknown as { panelW: number }).panelW}px`,
       ]);
       // 截完收起，保持后续截图与之前一致
       await evalJs<boolean>(
-        '收起高级选项',
+        '收起专业参数',
         `(() => {
           const adv = document.querySelector('.advanced-toggle');
           if (adv && document.querySelector('.advanced-body')) adv.click();
@@ -1121,8 +1310,15 @@ async function runSmokeCheck(): Promise<void> {
      *
      * 原 bug 的第三个表现就是"切到另一个文件后之前的选择丢了"（因为写进了按文件的 overrides）。
      * 这里再加载一个文件并切换选中项，确认高亮仍停在刚选的预设上。
+     *
+     * ⚠ 路径必须用 smokeBaseDir()，**不能用 app.getAppPath()**：
+     * 打包态 app.getAppPath() 指向 `...\resources\app.asar`（一个**文件**），
+     * 拼出来的 test-assets 路径永远不存在 —— 于是下面这 8 项检查在三轮自检里
+     * **一次都没跑过**，而摘要照样打印"全部通过"。这是与 ENOTDIR 同一类坑的漏网之鱼
+     * （ENOTDIR 那次修的就是这个 base 目录，但只改了截图目录与 --smoke-file，
+     * 漏了这一处）。见 docs/SESSION_SUMMARY.md 第 5.1 节第 14 条。
      */
-    const secondSample = path.join(app.getAppPath(), 'test-assets', 'samples', 'sample-hevc.mkv');
+    const secondSample = path.join(smokeAssetsDir(), 'samples', 'sample-hevc.mkv');
     if (existsSync(secondSample)) {
       await evalJs<boolean>(
         '加载第二个文件',
@@ -1314,6 +1510,21 @@ async function runSmokeCheck(): Promise<void> {
         })()`,
       );
       await shotDelay(300);
+    } else {
+      /*
+       * 第二个样本找不到时**必须报一条失败**，不能默默少跑 8 项。
+       *
+       * 这是"假通过"的另一种形态：检查项被跳过后摘要仍然打印"全部通过"，
+       * 于是没人会注意到覆盖范围缩水了。打包态就是这样退化成了 58/58（开发态 66/66），
+       * 而文档一直宣称两者"完全相同"。
+       * 现在只要样本缺失，就明确失败并说清怎么修。
+       */
+      extraChecks.push([
+        '多文件相关检查（跨文件保留 / 勾选 / 质量联动）能跑起来',
+        false,
+        `第二个样本不存在：${secondSample}。这 8 项检查会被跳过。` +
+          `开发态请先跑 npm run samples；打包态请加 --smoke-assets=<仓库的 test-assets 目录>`,
+      ]);
     }
 
     /* ---- 在应用内真跑一次完整转换：这是端到端最强证据 ---- */
@@ -1558,6 +1769,10 @@ async function runSmokeCheck(): Promise<void> {
    * 因此正确的截图工作流是两步：
    *   1) `--smoke --smoke-file=…`            产出 main / main-with-file / queue / settings
    *   2) `--smoke --smoke-file=… --smoke-convert`  额外产出 queue-done（不动 queue.png）
+   *
+   * 打包态跑自检还要多带一个 `--smoke-assets=<仓库的 test-assets 目录>`：
+   * 便携版旁边没有测试素材，不给这个参数会有 8 项多文件检查被跳过
+   * （跳过会**明确报一条失败**，不会静默少跑）。
    */
   const ranConversion = process.argv.includes('--smoke-convert');
   if (!ranConversion) {

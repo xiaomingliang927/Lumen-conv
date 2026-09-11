@@ -2,13 +2,22 @@
 /**
  * 右侧详情与参数面板。
  *
- * 信息架构（自上而下）：
- *   1. 视频信息卡片 —— 满足需求 1 的「加载视频信息显示」
- *   2. 输出格式预设 —— 主决策：我要转成什么
- *   3. 质量与尺寸 —— 次决策：压多小 / 多大分辨率
- *   4. 高级选项     —— 字幕、音轨、裁剪、文件名
+ * 信息架构（自上而下，两种模式共用同一套骨架）：
+ *   0. 模式切换（推荐设置 / 自定义）+ 当前方案摘要
+ *   1. 专业参数 —— **仅自定义模式出现**，且放在最上面（折叠态：格式 / 编码器 / 音轨 / 字幕 / 裁剪 / 命名）
+ *   2. 视频信息卡片 —— 满足需求 1 的「加载视频信息显示」，默认收起成一行摘要
+ *   3. 你要拿去干什么（用途） —— 主决策，决定格式/编码/分辨率/体积上限
+ *   4. 在哪播 / 多大体积 —— 次决策
+ *   5. 质量与尺寸 —— 帧率只在自定义模式出现
  *
- * 「给人用」的取舍：默认只露前 3 层，高级选项折叠起来。
+ * 「给人用」的取舍：推荐模式只露 2/3/4/5，专业参数整体隐藏；自定义模式把它摊开。
+ *
+ * 两条来之不易的教训（都来自用户反馈"推荐设置和自定义没区别啊"，见 DECISIONS.md D-018）：
+ *   ① **模式的差别必须落在首屏**。差异藏在折叠线以下 = 用户认为没区别。
+ *      所以专业参数入口在最上面，而不是挂在面板末尾。
+ *   ② **别再自动展开专业参数**。入口在首屏之后，自动展开会把「用途 / 在哪播 / 质量」
+ *      推到 1000px 之外，用户一进自定义模式就失去参照物。
+ *
  * 但每调一个参数都实时给出「预计体积」，因为这是用户最关心的隐性目标。
  */
 import { computed, ref, watch } from 'vue';
@@ -52,6 +61,17 @@ import {
 const advancedOpen = ref(false);
 
 /**
+ * 视频信息是否展开。
+ *
+ * 默认**收起**：这 8 行信息占了约 270px，会把下面的「用途卡片 / 在哪播 / 质量」
+ * 全部挤出首屏 —— 用户反馈"推荐设置和自定义没区别啊"，实测根因就在这里：
+ * 首屏只看到视频信息，两种模式的差别全在折叠线下。
+ *
+ * 收起时用一行摘要代替（时长 · 分辨率 · 编码），需要细节再展开。
+ */
+const infoOpen = ref(false);
+
+/**
  * 参数变更分两类处理，这个区分很重要（是一个真实 bug 的教训）：
  *
  * - **全局偏好**（用途 / 质量 / 分辨率 / 帧率 / 编码器 / 音频编码 / 文件名模板）：
@@ -91,8 +111,19 @@ const appMode = computed<'recommended' | 'custom'>(() => settings.value?.appMode
 
 async function setAppMode(mode: 'recommended' | 'custom'): Promise<void> {
   await updateSettings({ appMode: mode });
-  // 切到自定义时把详细区展开，省一次点击
-  if (mode === 'custom') advancedOpen.value = true;
+  /*
+   * 切到自定义时**不再**自动展开专业参数。
+   *
+   * 原来这里写的是 `advancedOpen.value = true`（"省一次点击"）。当时专业参数在面板末尾、
+   * 折叠线以下，自动展开只是让页面变长，用户掉进字段堆里也不觉得突兀。
+   *
+   * 现在专业参数入口搬到了面板**最上面**（就是为了让两种模式在首屏就能看出区别），
+   * 自动展开的后果就变了：一进自定义模式，首屏全是要填的专业字段，
+   * 而「用途 / 在哪播 / 质量」这些主决策被推到 1000px 之外 —— 用户失去参照物。
+   *
+   * 所以改成默认收起：入口就在第一屏最上方（一眼能看出和推荐模式不一样），
+   * 想调参数再点开，多一次点击换回一个有上下文的界面，这个交换是划算的。
+   */
 }
 
 /** 体积上限输入：空字符串 / 0 / 负数都视为"不限制" */
@@ -162,7 +193,7 @@ const activeUseCase = computed(() => findUseCase(options.value.useCaseId) ?? nul
 /**
  * 当前参数与所选用途的推荐值有哪些不一致。
  *
- * 为什么需要它：用户在「高级选项」里改一个下拉框，很容易忘记上面的用途卡片
+ * 为什么需要它：用户在「专业参数」里改一个下拉框，很容易忘记上面的用途卡片
  * 已经不再代表实际参数了（例如选了「发微信」却手动把编码器改成 H.265）。
  * 早期实现里卡片仍会高亮并继续显示该用途的提示，等于在误导用户。
  * 现在把差异显式列出来，并给一个"恢复推荐值"的出口。
@@ -215,7 +246,30 @@ function restoreUseCase(): void {
 /** 当前播放设备（用于展示说明） */
 const activeDevice = computed(() => findDevice(options.value.deviceId) ?? null);
 
-/** 高级选项里的容器/格式下拉：按分组列出全部预设 */
+/**
+ * 当前方案的参数摘要（一行）。
+ *
+ * 为什么需要它：用户反馈"推荐设置和自定义没区别啊" —— 实测发现两种模式的差别
+ * （专业参数入口、帧率下拉）全在**折叠线下**，首屏内容几乎一样，所以看不出区别。
+ * 把"这一套参数到底会怎么转"压成一行放在最上面，用户不必滚动就能看清当前方案，
+ * 切换模式时这一行也会立刻变化。
+ */
+const planSummary = computed(() => {
+  const uc = activeUseCase.value;
+  const preset = CONVERSION_PRESETS.find((p) => p.id === options.value.presetId);
+  const res = RESOLUTION_PRESETS.find((r) => r.id === options.value.resolutionId);
+  const quality = QUALITY_PRESETS.find((q) => q.id === options.value.qualityId);
+  const codec = (options.value.videoCodecId || '').replace(/_(nvenc|qsv|amf)$/, '').toUpperCase();
+  const parts: string[] = [];
+  if (preset) parts.push(preset.label);
+  if (codec && codec !== 'NONE') parts.push(codec);
+  if (res) parts.push(res.label);
+  if (quality && !options.value.sizeLimitMb) parts.push(quality.label);
+  if (options.value.sizeLimitMb) parts.push(`≤${options.value.sizeLimitMb} MB`);
+  return { useCase: uc?.label ?? '自定义组合', detail: parts.join(' · ') };
+});
+
+/** 专业参数里的容器/格式下拉：按分组列出全部预设 */
 const presetOptions = computed(() =>
   presetGroups.value.map((g) => ({
     group: g.title,
@@ -448,16 +502,230 @@ void VIDEO_CODECS;
         </button>
       </div>
 
-      <!-- ① 视频信息（两种模式都显示，但推荐模式下更简略） -->
-      <section class="block">
+      <!--
+        当前方案摘要：一行说清"这套参数会怎么转"。
+        放在模式切换正下方，让两种模式的差别在**首屏**就能看见
+        （不然差别全在折叠线下，用户会觉得"两个模式没区别"）。
+      -->
+      <div class="plan-summary">
+        <span class="plan-usecase">{{ planSummary.useCase }}</span>
+        <span class="plan-detail">{{ planSummary.detail }}</span>
+      </div>
+
+      <!--
+        自定义模式的"专业参数"入口放在首屏。
+        之前它在质量区块之后（约 900px 处，折叠线下），于是用户切到自定义模式后
+        首屏看到的还是推荐模式那套内容，自然会觉得"两个模式没区别"。
+      -->
+      <section v-if="appMode === 'custom'" class="block pro-block">
+        <button class="advanced-toggle" @click="advancedOpen = !advancedOpen">
+          <svg viewBox="0 0 12 12" width="10" height="10" :style="{ transform: advancedOpen ? 'rotate(90deg)' : '' }">
+            <path d="M4.5 2.5 8 6l-3.5 3.5" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
+          </svg>
+          专业参数
+          <!-- 这里只列**里面真正有的**项目：帧率不在此处，它在「质量与尺寸」里（自定义模式才出现） -->
+          <span class="muted">格式 / 编码器 / 音轨 / 字幕 / 裁剪 / 命名</span>
+        </button>
+
+        <div v-if="advancedOpen" class="advanced-body">
+
+          <!-- 用途已经把常用组合包好了；这里给"我就想自己指定容器"的用户留出口 -->
+          <label class="field">
+            <span class="field-label">输出格式（手动指定）</span>
+            <select
+              class="select"
+              :value="options.presetId"
+              @change="choosePreset(($event.target as HTMLSelectElement).value)"
+            >
+              <optgroup v-for="g in presetOptions" :key="g.group" :label="g.group">
+                <option v-for="p in g.items" :key="p.id" :value="p.id">{{ p.label }}</option>
+              </optgroup>
+            </select>
+            <span class="field-hint">
+              手动改格式会覆盖所选用途的推荐设置；改完可以再点一次用途卡片恢复
+            </span>
+          </label>
+
+          <div class="field-grid">
+            <label v-if="!isAudioOnly && codecChoices.length" class="field">
+              <span class="field-label">视频编码器</span>
+              <select
+                class="select"
+                :value="eff.videoCodecId"
+                @change="setGlobal({ videoCodecId: ($event.target as HTMLSelectElement).value })"
+              >
+                <option
+                  v-for="c in codecChoices"
+                  :key="c.id"
+                  :value="c.id"
+                  :disabled="!c.available"
+                >
+                  {{ c.label }}{{ c.available ? '' : `（不可用：${c.unavailableReason ?? '未知'}）` }}
+                </option>
+              </select>
+              <span class="field-hint">带「显卡加速」的选项需要对应显卡支持</span>
+            </label>
+
+            <label v-if="probe.hasAudio && !isRemux" class="field">
+              <span class="field-label">音频编码</span>
+              <select
+                class="select"
+                :value="eff.audioCodecId"
+                @change="setGlobal({ audioCodecId: ($event.target as HTMLSelectElement).value })"
+              >
+                <option v-for="a in audioChoices" :key="a.id" :value="a.id">
+                  {{ a.label }} — {{ a.description }}
+                </option>
+              </select>
+            </label>
+          </div>
+
+          <!-- 字幕 -->
+          <div v-if="probe.subtitle.length" class="field">
+            <span class="field-label">字幕轨道</span>
+            <div class="check-list">
+              <label
+                v-for="s in probe.subtitle"
+                :key="s.index"
+                class="check-item"
+                :class="{ disabled: s.codec === 'hdmv_pgs_subtitle' && activePreset.container === 'mp4' }"
+              >
+                <input
+                  type="checkbox"
+                  :checked="selectedSubs.includes(s.index)"
+                  @change="toggleSub(s.index)"
+                />
+                <span class="check-label">
+                  {{ s.title || languageName(s.language) || `轨道 #${s.index}` }}
+                  <span class="chip">{{ s.codec }}</span>
+                  <span v-if="s.isForced" class="chip chip-info">强制</span>
+                  <span v-if="!s.isTextBased" class="chip chip-accent" title="图形字幕，MP4 无法直接封装">图形</span>
+                </span>
+              </label>
+            </div>
+            <span class="field-hint">
+              默认不保留字幕。MP4 只支持文字字幕；图形字幕（PGS/VobSub）请选择 MKV 输出。
+            </span>
+          </div>
+
+          <!-- 裁剪 -->
+          <div class="field">
+            <span class="field-label">
+              裁剪片段
+              <label class="inline-switch">
+                <span class="switch">
+                  <input type="checkbox" :checked="trimEnabled" @change="trimEnabled ? disableTrim() : enableTrim()" />
+                  <span class="switch-track" />
+                </span>
+              </label>
+            </span>
+            <div v-if="trimEnabled" class="trim-row">
+              <label class="trim-field">
+                <span class="muted">开始</span>
+                <input
+                  class="input mono"
+                  type="number"
+                  min="0"
+                  :max="probe.durationSec"
+                  step="0.1"
+                  :value="trimStart"
+                  @input="trimStart = Number(($event.target as HTMLInputElement).value)"
+                />
+                <span class="muted mono">{{ formatDuration(trimStart) }}</span>
+              </label>
+              <label class="trim-field">
+                <span class="muted">结束</span>
+                <input
+                  class="input mono"
+                  type="number"
+                  min="0"
+                  :max="probe.durationSec"
+                  step="0.1"
+                  :value="trimEnd"
+                  @input="trimEnd = Number(($event.target as HTMLInputElement).value)"
+                />
+                <span class="muted mono">{{ formatDuration(trimEnd) }}</span>
+              </label>
+            </div>
+            <span v-else class="field-hint">开启后可只转换视频中的一段（例如做 GIF 动图时截 5 秒）</span>
+          </div>
+
+          <!-- 文件名与元数据 -->
+          <div class="field-grid">
+            <label class="field">
+              <span class="field-label">输出文件命名</span>
+              <!--
+                key 是必要的：下面那个自定义输入框用 v-if 控制显隐，
+                兄弟节点数量会变。没有 key 时 Vue 在复用时可能把 select 的
+                受控值对错元素，表现为"选了自定义又弹回上一个选项"（实测踩到）。
+              -->
+              <select
+                key="name-preset-select"
+                class="select"
+                :value="namePresetChoice"
+                @change="chooseNamePreset(($event.target as HTMLSelectElement).value)"
+              >
+                <option v-for="p in NAME_PRESETS" :key="p.id" :value="p.id">{{ p.label }}</option>
+              </select>
+              <input
+                v-if="namePresetChoice === 'custom'"
+                key="name-custom-input"
+                class="input template-input"
+                :value="eff.fileNameTemplate"
+                placeholder="{name}"
+                @input="setGlobal({ fileNameTemplate: ($event.target as HTMLInputElement).value })"
+              />
+              <span class="field-hint">
+                输出文件名：<span class="mono">{{ templatePreview }}</span>
+                <template v-if="namePresetChoice === 'custom'">
+                  <br />可用变量：<code>{name}</code> 原文件名、<code>{preset}</code> 输出格式、
+                  <code>{date}</code> 日期
+                </template>
+              </span>
+            </label>
+          </div>
+
+          <label class="check-item">
+            <input v-model="keepMetadata" type="checkbox" />
+            <span class="check-label">保留元数据与章节<small class="muted">（标题、作者、章节标记）</small></span>
+          </label>
+        </div>
+      </section>
+
+      <!-- ① 视频信息（默认收起成一行摘要，把首屏让给"选用途"） -->
+      <section class="block info-block">
         <header class="block-head">
-          <h4>视频信息</h4>
+          <button class="info-toggle" @click="infoOpen = !infoOpen">
+            <svg viewBox="0 0 12 12" width="10" height="10" :style="{ transform: infoOpen ? 'rotate(90deg)' : '' }">
+              <path d="M4.5 2.5 8 6l-3.5 3.5" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
+            </svg>
+            <h4>视频信息</h4>
+          </button>
           <button class="btn btn-sm btn-ghost" @click="revealInFolder(probe.path)">
             在文件夹中显示
           </button>
         </header>
 
-        <div class="info-grid selectable">
+        <!-- 收起时的一行摘要：够用，且不占地方 -->
+        <div v-if="!infoOpen" class="info-summary selectable">
+          <span class="mono">{{ formatDuration(probe.durationSec) }}</span>
+          <span class="sep">·</span>
+          <span>{{ formatBytes(probe.sizeBytes) }}</span>
+          <template v-if="video">
+            <span class="sep">·</span>
+            <span class="mono">{{ video.displayWidth }}×{{ video.displayHeight }}</span>
+          </template>
+          <span class="sep">·</span>
+          <span>{{ probe.formatLongName }}</span>
+          <template v-if="video">
+            <span class="sep">·</span>
+            <span class="chip">{{ video.codec.toUpperCase() }}</span>
+          </template>
+          <span v-if="video?.isHdr" class="chip chip-accent">HDR</span>
+          <span v-if="video && video.bitDepth >= 10" class="chip chip-info">10bit</span>
+        </div>
+
+        <div v-else class="info-grid selectable">
           <div class="info-row">
             <span class="k">容器</span>
             <span class="v">{{ probe.formatLongName }}</span>
@@ -732,180 +1000,6 @@ void VIDEO_CODECS;
           </label>
         </div>
       </section>
-
-      <!-- ⑤ 高级选项：只在自定义模式出现 -->
-      <section v-if="appMode === 'custom'" class="block">
-        <button class="advanced-toggle" @click="advancedOpen = !advancedOpen">
-          <svg viewBox="0 0 12 12" width="10" height="10" :style="{ transform: advancedOpen ? 'rotate(90deg)' : '' }">
-            <path d="M4.5 2.5 8 6l-3.5 3.5" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
-          </svg>
-          高级选项
-          <span class="muted">格式 / 编码器 / 音轨 / 字幕 / 裁剪 / 命名</span>
-        </button>
-
-        <div v-if="advancedOpen" class="advanced-body">
-          <!-- 用途已经把常用组合包好了；这里给"我就想自己指定容器"的用户留出口 -->
-          <label class="field">
-            <span class="field-label">输出格式（手动指定）</span>
-            <select
-              class="select"
-              :value="options.presetId"
-              @change="choosePreset(($event.target as HTMLSelectElement).value)"
-            >
-              <optgroup v-for="g in presetOptions" :key="g.group" :label="g.group">
-                <option v-for="p in g.items" :key="p.id" :value="p.id">{{ p.label }}</option>
-              </optgroup>
-            </select>
-            <span class="field-hint">
-              手动改格式会覆盖所选用途的推荐设置；改完可以再点一次用途卡片恢复
-            </span>
-          </label>
-
-          <div class="field-grid">
-            <label v-if="!isAudioOnly && codecChoices.length" class="field">
-              <span class="field-label">视频编码器</span>
-              <select
-                class="select"
-                :value="eff.videoCodecId"
-                @change="setGlobal({ videoCodecId: ($event.target as HTMLSelectElement).value })"
-              >
-                <option
-                  v-for="c in codecChoices"
-                  :key="c.id"
-                  :value="c.id"
-                  :disabled="!c.available"
-                >
-                  {{ c.label }}{{ c.available ? '' : `（不可用：${c.unavailableReason ?? '未知'}）` }}
-                </option>
-              </select>
-              <span class="field-hint">带「显卡加速」的选项需要对应显卡支持</span>
-            </label>
-
-            <label v-if="probe.hasAudio && !isRemux" class="field">
-              <span class="field-label">音频编码</span>
-              <select
-                class="select"
-                :value="eff.audioCodecId"
-                @change="setGlobal({ audioCodecId: ($event.target as HTMLSelectElement).value })"
-              >
-                <option v-for="a in audioChoices" :key="a.id" :value="a.id">
-                  {{ a.label }} — {{ a.description }}
-                </option>
-              </select>
-            </label>
-          </div>
-
-          <!-- 字幕 -->
-          <div v-if="probe.subtitle.length" class="field">
-            <span class="field-label">字幕轨道</span>
-            <div class="check-list">
-              <label
-                v-for="s in probe.subtitle"
-                :key="s.index"
-                class="check-item"
-                :class="{ disabled: s.codec === 'hdmv_pgs_subtitle' && activePreset.container === 'mp4' }"
-              >
-                <input
-                  type="checkbox"
-                  :checked="selectedSubs.includes(s.index)"
-                  @change="toggleSub(s.index)"
-                />
-                <span class="check-label">
-                  {{ s.title || languageName(s.language) || `轨道 #${s.index}` }}
-                  <span class="chip">{{ s.codec }}</span>
-                  <span v-if="s.isForced" class="chip chip-info">强制</span>
-                  <span v-if="!s.isTextBased" class="chip chip-accent" title="图形字幕，MP4 无法直接封装">图形</span>
-                </span>
-              </label>
-            </div>
-            <span class="field-hint">
-              默认不保留字幕。MP4 只支持文字字幕；图形字幕（PGS/VobSub）请选择 MKV 输出。
-            </span>
-          </div>
-
-          <!-- 裁剪 -->
-          <div class="field">
-            <span class="field-label">
-              裁剪片段
-              <label class="inline-switch">
-                <span class="switch">
-                  <input type="checkbox" :checked="trimEnabled" @change="trimEnabled ? disableTrim() : enableTrim()" />
-                  <span class="switch-track" />
-                </span>
-              </label>
-            </span>
-            <div v-if="trimEnabled" class="trim-row">
-              <label class="trim-field">
-                <span class="muted">开始</span>
-                <input
-                  class="input mono"
-                  type="number"
-                  min="0"
-                  :max="probe.durationSec"
-                  step="0.1"
-                  :value="trimStart"
-                  @input="trimStart = Number(($event.target as HTMLInputElement).value)"
-                />
-                <span class="muted mono">{{ formatDuration(trimStart) }}</span>
-              </label>
-              <label class="trim-field">
-                <span class="muted">结束</span>
-                <input
-                  class="input mono"
-                  type="number"
-                  min="0"
-                  :max="probe.durationSec"
-                  step="0.1"
-                  :value="trimEnd"
-                  @input="trimEnd = Number(($event.target as HTMLInputElement).value)"
-                />
-                <span class="muted mono">{{ formatDuration(trimEnd) }}</span>
-              </label>
-            </div>
-            <span v-else class="field-hint">开启后可只转换视频中的一段（例如做 GIF 动图时截 5 秒）</span>
-          </div>
-
-          <!-- 文件名与元数据 -->
-          <div class="field-grid">
-            <label class="field">
-              <span class="field-label">输出文件命名</span>
-              <!--
-                key 是必要的：下面那个自定义输入框用 v-if 控制显隐，
-                兄弟节点数量会变。没有 key 时 Vue 在复用时可能把 select 的
-                受控值对错元素，表现为"选了自定义又弹回上一个选项"（实测踩到）。
-              -->
-              <select
-                key="name-preset-select"
-                class="select"
-                :value="namePresetChoice"
-                @change="chooseNamePreset(($event.target as HTMLSelectElement).value)"
-              >
-                <option v-for="p in NAME_PRESETS" :key="p.id" :value="p.id">{{ p.label }}</option>
-              </select>
-              <input
-                v-if="namePresetChoice === 'custom'"
-                key="name-custom-input"
-                class="input template-input"
-                :value="eff.fileNameTemplate"
-                placeholder="{name}"
-                @input="setGlobal({ fileNameTemplate: ($event.target as HTMLInputElement).value })"
-              />
-              <span class="field-hint">
-                输出文件名：<span class="mono">{{ templatePreview }}</span>
-                <template v-if="namePresetChoice === 'custom'">
-                  <br />可用变量：<code>{name}</code> 原文件名、<code>{preset}</code> 输出格式、
-                  <code>{date}</code> 日期
-                </template>
-              </span>
-            </label>
-          </div>
-
-          <label class="check-item">
-            <input v-model="keepMetadata" type="checkbox" />
-            <span class="check-label">保留元数据与章节<small class="muted">（标题、作者、章节标记）</small></span>
-          </label>
-        </div>
-      </section>
     </div>
 
     <footer v-if="probe" class="details-foot">
@@ -976,6 +1070,44 @@ void VIDEO_CODECS;
   display: flex;
   flex-direction: column;
   gap: 5px;
+}
+
+/* ---------- 视频信息：收起态摘要 ---------- */
+
+.info-block .block-head {
+  margin-bottom: 8px;
+}
+
+.info-toggle {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 0;
+  color: var(--text-primary);
+  font-weight: 600;
+}
+.info-toggle:hover {
+  color: var(--accent);
+}
+.info-toggle svg {
+  transition: transform 0.15s;
+  color: var(--text-muted);
+}
+.info-toggle h4 {
+  font-size: 13px;
+}
+
+.info-summary {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  font-size: 12px;
+  color: var(--text-secondary);
+  line-height: 1.7;
+}
+.info-summary .sep {
+  color: var(--text-muted);
 }
 .info-row {
   display: flex;
@@ -1231,7 +1363,7 @@ void VIDEO_CODECS;
   /*
    * minmax(0, 1fr) 而不是 1fr —— 这是修一个真实布局 bug 的关键。
    *
-   * `1fr` 的最小值是 auto，网格列会被**内容**撑宽：高级选项里的 <select>
+   * `1fr` 的最小值是 auto，网格列会被**内容**撑宽：专业参数里的 <select>
    * 因为 <option> 文本很长（"AAC — MP4 标准音频，兼容性最好"）而把列撑到 516px，
    * 而面板只有 400px，于是整个区域横向溢出、文字被截断（用户反馈"很奇怪"）。
    * minmax(0, 1fr) 把最小宽度设为 0，列不再被内容撑开。
@@ -1331,6 +1463,30 @@ void VIDEO_CODECS;
 .mode-btn.active small {
   color: var(--accent);
   opacity: 0.85;
+}
+
+/* 当前方案摘要 */
+.plan-summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin: 8px 0 2px;
+  padding: 8px 10px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-subtle);
+  font-size: 11.5px;
+}
+.plan-usecase {
+  font-weight: 600;
+  color: var(--accent);
+  flex: none;
+}
+.plan-detail {
+  color: var(--text-secondary);
+  flex: 1;
+  min-width: 0;
 }
 
 .check-list {

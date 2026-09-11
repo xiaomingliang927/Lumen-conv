@@ -19,8 +19,9 @@
 | 会话中途 | 项目所有者 | 把会话的**沙箱策略从"询问"改为"完全放开文件访问"**，解除文件写入限制 | 解除限制后，源码落盘、依赖安装、二进制下载与解包、构建产物生成都不再被沙箱拦截，这也是 `scripts/install.mjs` 能把 npm 缓存固定到项目内 `.npm-cache/` 的前提（此前写工作区外缓存目录会 `EPERM`）。该限制的解除记录在 `README.md` 的"环境踩坑备忘"第 1 条与 `scripts/install.mjs` 的注释中 |
 | 文档阶段（上一轮） | 项目所有者 | 要求为项目补齐交付文档，并**明确要求"不要编造事实"**：只使用已给出的信息，且必须用 read/grep/glob 读源码核实细节；不确定的地方写"待验证"；并如实报告代码与描述不一致之处 | 逐份核对源码（`package.json`、`shared/`、`electron/`、`renderer/`、`scripts/` 与构建配置），产出交付文档；**并且不只做静态核对，还实际执行了仓库自带的验证命令**。`docs/SESSION_SUMMARY.md` 第 4 节据此区分"已实机验证 / 尚未验证"，第 5 节列出描述与代码不一致或实现有缺口的地方 |
 | 文档同步阶段（上一轮） | 项目所有者 | 指出"上一轮文档产出之后代码发生了多处修复与变更"，要求把文档与当前代码对齐；**再次强调先读代码再改文档**，如果代码与描述不符以代码为准并在汇报中指出；并给出变更清单（依赖与二进制来源、GIF 缺陷修复、源码目录改名、图标与界面自检等） | 逐项用 read/grep/glob 核实全部 14 条变更描述，并重跑三条验证命令：`npm run typecheck`（退出码 0）、`npm run smoke`（**56/56 通过**）、`npm run smoke:ui:file`（**49/49 通过**，产出 4 张截图）。据此把 7 份文档全部对齐。**核实中发现描述与代码/实测不符之处并如实上报**，例如：实测压缩比为 661 KB → 250 KB（**38%**）而非描述里的 36%；低分辨率 GIF 回归产物为 **1609 KB** 而非描述里的 1546 KB。另外查出一条描述里没提到的问题：已有 Electron 实例持单实例锁时 `npm run smoke:ui` 不会刷新截图却不报错。核对期间代码库仍在被另一侧修改（`package.json` 新增脚本、`renderer/App.vue` 补注释），因此本轮所有数字都绑定到核实时的代码状态并在文档中注明 |
-| 开发阶段（文档对齐之后） | **开发者 / AI 自测（不是用户反馈）** | 界面自检强化到 `--smoke-convert` 一级、并把断言改成"点击前后引擎队列长度必须 0 → 1"之后，暴露出**一条此前两轮自测都没抓到的严重缺陷**：Vue 响应式代理导致 IPC 结构化克隆失败，「开始转换」按钮静默失效（最先在"改过字幕勾选"这条路径上复现；进一步核对表明旧表达式下**每次点击都会失败**）；同时暴露出 `executeJavaScript` 的 `void el.click(); true` 克隆陷阱（`void` 只丢弃值，DOM 节点仍会被结构化克隆） | 修复 `useStore.ts` 的 `effectiveOptions()`（JSON 往返去响应式）与 `startConversion()` 的 try/catch + 错误 toast；`main.ts` 的自检表达式全部包 IIFE 并加 `evalJs(label, expr)` 标签封装；`App.vue` 增加 `unhandledrejection` / `error` 全局监听并显式 `String()` 化；`notifyDone()` 的 `requestPermission()` 改为 `void … .catch()`；`FileList.vue` 的 `.file-sub` 间距 5px → 6px。修复后 `npm run smoke:ui:full` **61/61 通过、退出码 0**，控制台无任何克隆错误。**这条按要求标注来源：它是开发者自测发现的，不是用户反馈**；完整复盘见 `SESSION_SUMMARY.md` 第 5.1.1 节 |
-| 打包阶段（本轮） | **开发者 / AI 自测（不是用户反馈）** | 新增"离线便携版打包"能力后，**只有把打包产物真的跑起来**才暴露出来的两个问题：① **打包态路径 bug**——`app.getAppPath()` 在打包态指向 `...\resources\app.asar`（一个**文件**），自检代码却拿它当目录做 `mkdirSync()`，便携版上直接抛 `ENOTDIR, not a directory`（开发态 61/61 全绿完全掩盖了它）；② **同一次运行里截图互相覆盖**——先截 `queue-done.png`（转换完成后）再截 `queue.png`，于是两个文件是同一张图（sha256 相同），而文档一直宣称"`queue.png` 是空队列" | ① `electron/main.ts` 新增 `smokeBaseDir()`：`app.isPackaged` 时返回 `path.dirname(app.getPath('exe'))`，否则返回 `app.getAppPath()`；**截图目录**与 `--smoke-file=` 的相对路径解析都改用它。修复后便携版自检 **61/61 通过、退出码 0**。<br>② `runSmokeCheck()` 里用 `ranConversion` 判定：跑过 `--smoke-convert` 就**不再写 `queue.png`**，只在它不存在时给提示；正确工作流固定为两步（`npm run smoke:ui:file` → `npm run smoke:ui:full`）。重新生成后 `queue.png`（22,942 字节，空队列，逐字节稳定）与 `queue-done.png`（54–58 KB，有任务，因含「已用时」文本会波动）**哈希不同**。<br>③ 顺带把「应用内转换：队列卡片显示完成与产物大小」从"只打印不断言"改成真断言：状态含「已完成」+ 产物大小含数字 + 存在打开按钮。**这两条按要求标注来源：均为开发者自测发现，不是用户反馈**；记录见 `SESSION_SUMMARY.md` 第 5.1 节第 9-11 条与 `TEST_CASES.md` 的 A8 |
+| 开发阶段（文档对齐之后） | **开发者 / AI 自测（不是用户反馈）** | 界面自检强化到 `--smoke-convert` 一级、并把断言改成"点击前后引擎队列长度必须 0 → 1"之后，暴露出**一条此前两轮自测都没抓到的严重缺陷**：Vue 响应式代理导致 IPC 结构化克隆失败，「开始转换」按钮静默失效（最先在"改过字幕勾选"这条路径上复现；进一步核对表明旧表达式下**每次点击都会失败**）；同时暴露出 `executeJavaScript` 的 `void el.click(); true` 克隆陷阱（`void` 只丢弃值，DOM 节点仍会被结构化克隆） | 修复 `useStore.ts` 的 `effectiveOptions()`（JSON 往返去响应式）与 `startConversion()` 的 try/catch + 错误 toast；`main.ts` 的自检表达式全部包 IIFE 并加 `evalJs(label, expr)` 标签封装；`App.vue` 增加 `unhandledrejection` / `error` 全局监听并显式 `String()` 化；`notifyDone()` 的 `requestPermission()` 改为 `void … .catch()`；`FileList.vue` 的 `.file-sub` 间距 5px → 6px。修复后 `npm run smoke:ui:full` **66/66 通过、退出码 0**，控制台无任何克隆错误。**这条按要求标注来源：它是开发者自测发现的，不是用户反馈**；完整复盘见 `SESSION_SUMMARY.md` 第 5.1.1 节 |
+| 打包阶段（本轮） | **开发者 / AI 自测（不是用户反馈）** | 新增"离线便携版打包"能力后，**只有把打包产物真的跑起来**才暴露出来的两个问题：① **打包态路径 bug**——`app.getAppPath()` 在打包态指向 `...\resources\app.asar`（一个**文件**），自检代码却拿它当目录做 `mkdirSync()`，便携版上直接抛 `ENOTDIR, not a directory`（开发态 66/66 全绿完全掩盖了它）；② **同一次运行里截图互相覆盖**——先截 `queue-done.png`（转换完成后）再截 `queue.png`，于是两个文件是同一张图（sha256 相同），而文档一直宣称"`queue.png` 是空队列" | ① `electron/main.ts` 新增 `smokeBaseDir()`：`app.isPackaged` 时返回 `path.dirname(app.getPath('exe'))`，否则返回 `app.getAppPath()`；**截图目录**与 `--smoke-file=` 的相对路径解析都改用它。修复后便携版自检 **66/66 通过、退出码 0**。<br>② `runSmokeCheck()` 里用 `ranConversion` 判定：跑过 `--smoke-convert` 就**不再写 `queue.png`**，只在它不存在时给提示；正确工作流固定为两步（`npm run smoke:ui:file` → `npm run smoke:ui:full`）。重新生成后 `queue.png`（22,942 字节，空队列，逐字节稳定）与 `queue-done.png`（54–58 KB，有任务，因含「已用时」文本会波动）**哈希不同**。<br>③ 顺带把「应用内转换：队列卡片显示完成与产物大小」从"只打印不断言"改成真断言：状态含「已完成」+ 产物大小含数字 + 存在打开按钮。**这两条按要求标注来源：均为开发者自测发现，不是用户反馈**；记录见 `SESSION_SUMMARY.md` 第 5.1 节第 9-11 条与 `TEST_CASES.md` 的 A8 |
+| 界面走查阶段（本轮） | 项目所有者（**真实用户反馈**） | 在真的把应用点了一遍之后提出：**"推荐设置和自定义没区别啊"** | 先**量化**再改：让自检把两种模式"首屏（折叠线以上）实际可见的区块"打印出来，得到改动前两种模式的首屏区块**逐块相同**（`视频信息@106 → 用途@376 → 在哪播@787`），专业参数区块在 **900px 之外**——用户说"没区别"是准确的。根因两条：① 「视频信息」默认展开占约 270px，把「用途」推过首屏中线；② 专业参数挂在面板末尾。<br>落地四项改动：① 视频信息默认收起成一行摘要（`infoOpen`）；② 模式切换下方加一行「当前方案摘要」；③ 专业参数区块整体搬到面板**最上面**（仅自定义模式出现）；④ **取消**"切到自定义就自动展开专业参数"（原为省一次点击，但入口搬到首屏后，自动展开会让首屏全是待填字段、主决策被推到 1000px 外）。<br>证据：`npm run smoke:ui:file` **54/54**、`npm run smoke:ui:full` **66/66**，退出码 0；自检新增断言"自定义模式：专业参数入口出现在首屏"→ 实测 `专业参数@152`；两种模式首屏均打印（推荐 `视频信息@152 / 你要拿去干什么@235 / 在哪播 / 多大体积@646`，自定义 `专业参数@152 / 视频信息@205 / 你要拿去干什么@288 / 在哪播 / 多大体积@699`）。<br>完整决策记录见 `DECISIONS.md` D-018；**改动过程中还踩到一个自己造的坑**（搬模板片段只搬了开标签，`vite build` 直接报 `Element is missing end tag`，`vue-tsc` 也过不了），一并记在 D-018 的"本次改动里踩到的坑" |
 
 ---
 
@@ -35,6 +36,7 @@
 | 给仓库与凭据、全程推 GitHub | **流程性的**。改变了工作方式（需要处理 SSH、代理镜像、`.gitignore` 范围），但不影响技术方案 |
 | 中途放开沙箱 | **解除阻塞**。此前文件写入受限导致安装与构建反复失败；放开后安装链路才真正跑通 |
 | 要求"不要编造事实" | **质量约束**。促使对所有结论做代码核对，并把"未验证"的部分显式标注出来，而不是写成"已完成" |
+| "推荐设置和自定义没区别啊" | **一针见血的可用性反馈**。它推翻了"代码上分了模式 = 用户能看出区别"这个假设：两种模式的差异在代码里成立、在**首屏**却不成立。这条反馈把"界面改动是否有效"从主观判断变成可量化断言（打印首屏可见区块），并直接改了四处实现（含一处**反向**修改：取消自动展开）。教训是——**功能存在 ≠ 用户感知到**，验收标准要落在用户第一眼看到的东西上 |
 
 ---
 
@@ -53,11 +55,11 @@
 | 是否补齐 `build/icon.ico`？（上轮第 3 项） | **已补齐**。`scripts/make-icon.mjs` 用 ffmpeg 的 `geq` 滤镜生成 `build/icon.ico`（7 档尺寸）与 `build/icon.png`，含像素自检（`npm run make:icon`）。决策记录见 `DECISIONS.md` D-015。**但安装包仍未产出**，见 3.1 第 2 项 |
 | 是否补充界面截图？（上轮第 4 项） | **已产出 5 张**：`main.png`、`main-with-file.png`、`queue.png`、`queue-done.png`、`settings.png`，全部由 `npm run smoke:ui:full` 自动生成（不是手工摆拍），README 已引用 |
 | 是否接入 FFmpeg-Builds 新构建以启用 AV1？（上轮第 8 项） | **已启用**。实际落地的就是 FFmpeg-Builds master 构建 `N-126435-gf93cd72dde-20260906`，含 `libsvtav1`，AV1 软编码可用 |
-| Electron 运行时要不要现在修好？（上轮第 9 项） | **已修好**。`npm run smoke:ui:full` 能启动真实窗口、加载真实视频、在应用内真的跑完一次转换、截图，并以退出码 0 结束（**61/61 通过**） |
-| 是否接通已存在但未生效的功能？（上轮第 10 项） | **已接通**。`openFolderOnFinish` 在任务首次变为 `done` 时真正打开输出目录；`settings:reset` 与 `jobs:cancel-all` 已在 preload 暴露，设置页底部有「恢复默认设置」；`hardwareAcceleration` 与 `safeMode` 两个从未被读取的字段**直接删除**，`errors.ts` 的提示文案改为指向真实存在的「高级选项 → 视频编码器」 |
+| Electron 运行时要不要现在修好？（上轮第 9 项） | **已修好**。`npm run smoke:ui:full` 能启动真实窗口、加载真实视频、在应用内真的跑完一次转换、截图，并以退出码 0 结束（**66/66 通过**） |
+| 是否接通已存在但未生效的功能？（上轮第 10 项） | **已接通**。`openFolderOnFinish` 在任务首次变为 `done` 时真正打开输出目录；`settings:reset` 与 `jobs:cancel-all` 已在 preload 暴露，设置页底部有「恢复默认设置」；`hardwareAcceleration` 与 `safeMode` 两个从未被读取的字段**直接删除**，`errors.ts` 的提示文案改为指向真实存在的「专业参数 → 视频编码器」 |
 | 是否修掉那条已复现的 GIF 缺陷？（上轮第 11 项） | **已修复并补齐回归用例**。GIF 调色板链改为合并进已有 `-vf`（过滤空串），冒烟测试新增两条命令装配用例 + 一条真实转码回归用例（640×480 源 + 480p 档 + 不改帧率 → 1609 KB 有效产物） |
 | `src/` → `renderer/` 的改名是否需要同步？（上轮第 12 项） | **已同步**。本轮把全部文档里的路径引用统一为 `renderer/`（`docs/` 与 `README.md` 已无 `src/` 引用） |
-| 界面自检要不要覆盖"点按钮真的能开始转换"？（由开发者自测提出，非用户反馈） | **已覆盖且断言升级为严格判定**。`npm run smoke:ui:full` 现在是 **61/61 通过、退出码 0**：点击前先 `engine.remove()` 清空队列，点击后要求引擎队列长度从 **0 变为 1**。正是这条断言暴露了"按钮静默失效"的克隆缺陷（见 `TEST_CASES.md` 的 A7 与 `SESSION_SUMMARY.md` 第 5.1.1 节） |
+| 界面自检要不要覆盖"点按钮真的能开始转换"？（由开发者自测提出，非用户反馈） | **已覆盖且断言升级为严格判定**。`npm run smoke:ui:full` 现在是 **66/66 通过、退出码 0**：点击前先 `engine.remove()` 清空队列，点击后要求引擎队列长度从 **0 变为 1**。正是这条断言暴露了"按钮静默失效"的克隆缺陷（见 `TEST_CASES.md` 的 A7 与 `SESSION_SUMMARY.md` 第 5.1.1 节） |
 | 跨进程传参是否要立规矩？（由上述缺陷引出） | **已立规矩**：新增决策记录 `DECISIONS.md` **D-016**——跨 IPC 传参统一走"去响应式的纯对象"（JSON 往返），并写明了它丢失 Date/Map 的代价与适用边界 |
 
 ### 3.1 影响验收的事项
@@ -68,7 +70,7 @@
    注意 `.gitignore` 已就绪，`git add -A` 不会把 290 MB 二进制带进去。
 
 2. **是否要在有网络的环境补一个 NSIS 安装包？**
-   便携版已经有了并实测跑通（`release/Lumen-conv-便携版/`，602.3 MB，61/61 自检通过），
+   便携版已经有了并实测跑通（`release/Lumen-conv-便携版/`，602.3 MB，66/66 自检通过），
    但 **NSIS 安装包本机做不出来**：`electron-builder --win nsis` 需要额外工具链
    （`app-builder-bin` / `nsis` / `winCodeSign`）与一份与 `@electron/get` 不通用的 Electron 缓存，
    两次实测都以 `Timeout awaiting 'request' for 600000ms` 失败（见 `SESSION_SUMMARY.md` 第 4.3 节与 `DECISIONS.md` D-017）。
@@ -115,8 +117,8 @@
 
 | 反馈 | 状态 |
 | --- | --- |
-| 7 条原始要求 | 6 条已落地（① ② ③ ④ ⑥ ⑦ 有代码依据，其中 ① ② ③ 已由 `npm run smoke` 的 56 项检查实机验证，⑦ 另有界面自检的 40 项断言，含"按钮点击真的创建了任务"与"质量档位真的影响 ffmpeg 命令"），第 ⑤ 条（提交 github）**已执行**（见下表） |
-| 选定 Electron 技术栈 | ✅ 已落地（后端逻辑与界面都已实机验证：`smoke` 56/56、`smoke:ui:full` 61/61、退出码 0） |
+| 7 条原始要求 | 6 条已落地（① ② ③ ④ ⑥ ⑦ 有代码依据，其中 ① ② ③ 已由 `npm run smoke` 的 56 项检查实机验证，⑦ 另有界面自检的 66 项断言，含"按钮点击真的创建了任务"与"质量档位真的影响 ffmpeg 命令"），第 ⑤ 条（提交 github）**已执行**（见下表） |
+| 选定 Electron 技术栈 | ✅ 已落地（后端逻辑与界面都已实机验证：`smoke` 56/56、`smoke:ui:full` 66/66、退出码 0） |
 | 全程直接推 GitHub | ✅ 已执行：`https://github.com/xiaomingliang927/Lumen-conv`（SSH 走 Windows 原生 OpenSSH；HTTPS 亦可直接 clone），共 8 次提交 |
 | 指出"点预设卡片右侧的标签没反应"（本轮） | ✅ 已修复，且**问题比反馈的更严重**：右侧标签本就不是按钮，但整张卡片点了也不换高亮——预设选择写进了按文件的 overrides，而选中态读全局。附带修好同类根因的质量/分辨率/帧率/编码器/音频/文件名模板，并新增 4 项预设交互断言 |
 | 追问"质量下拉是可以用的吗"（本轮） | ✅ 可用，并补上**硬证据**：切「极小体积」后真实任务的 ffmpeg 命令里出现 `-crf 34`。同时发现它与预设是**同一个根因**的更大面积版本（6 个控件全部写错位置），一并修复 |
@@ -125,9 +127,10 @@
 | "不要编造事实"（上一轮） | ✅ 已执行：全部结论基于源码核对与**实际执行验证命令**，未验证项显式标注 |
 | "先读代码再改文档，以代码为准并指出不符"（上一轮） | ✅ 已执行：核实 14 条变更描述并重跑三条验证命令；发现的 3 处数字/事实不符已在 `SESSION_SUMMARY.md` 与本文件第 1 节如实记录 |
 | 开发者自测发现的缺陷（**非用户反馈**） | ✅ 已修复并补上防回归断言：克隆缺陷的根因、假通过复盘、断言强化与四条预防措施记录在 `SESSION_SUMMARY.md` 第 5.1.1 节、`TEST_CASES.md` 的 A7、`DECISIONS.md` 的 D-016 |
-| 打包阶段自测发现的两个问题（**非用户反馈**，本轮） | ✅ 已修复：① 打包态 `app.getAppPath()` 指向文件导致的 `ENOTDIR` → 新增 `smokeBaseDir()`，便携版自检 **61/61 通过、退出码 0**；② `queue.png` 被 `queue-done.png` 覆盖 → 跑过转换就不再写 `queue.png`，两者现已哈希不同；③ 顺带把队列卡片那条断言从"只打印"升级为真断言。见 `SESSION_SUMMARY.md` 第 5.1 节第 9-11 条、`TEST_CASES.md` 的 A8、`DECISIONS.md` 的 D-017 |
-| 便携版打包（本轮新增能力，**非用户反馈**） | ✅ 已落地：`scripts/package-portable.mjs` 离线组装出 `release/Lumen-conv-便携版/`（`Lumen-conv.exe` 200.4 MB、目录 602.3 MB），实跑自检 61/61 通过；**NSIS 安装包仍未产出**，原因是环境限制而非设计取舍（见 `SESSION_SUMMARY.md` 第 4.3 节） |
+| 打包阶段自测发现的两个问题（**非用户反馈**，本轮） | ✅ 已修复：① 打包态 `app.getAppPath()` 指向文件导致的 `ENOTDIR` → 新增 `smokeBaseDir()`，便携版自检 **66/66 通过、退出码 0**；② `queue.png` 被 `queue-done.png` 覆盖 → 跑过转换就不再写 `queue.png`，两者现已哈希不同；③ 顺带把队列卡片那条断言从"只打印"升级为真断言。见 `SESSION_SUMMARY.md` 第 5.1 节第 9-11 条、`TEST_CASES.md` 的 A8、`DECISIONS.md` 的 D-017 |
+| 便携版打包（上一轮新增能力，**非用户反馈**） | ✅ 已落地：`scripts/package-portable.mjs` 离线组装出 `release/Lumen-conv-便携版/`（`Lumen-conv.exe` 200.4 MB、目录 602.3 MB），实跑自检 66/66 通过；**NSIS 安装包仍未产出**，原因是环境限制而非设计取舍（见 `SESSION_SUMMARY.md` 第 4.3 节） |
+| "推荐设置和自定义没区别啊"（本轮，**真实用户反馈**） | ✅ 已修复并**量化验证**：先测出两种模式改动前的首屏区块逐块相同，再改四处（视频信息默认收起 / 新增方案摘要 / 专业参数入口搬到首屏最上面 / 取消切模式自动展开）。新增断言"自定义模式：专业参数入口出现在首屏"实测 `专业参数@152`；`smoke:ui:file` **54/54**、`smoke:ui:full` **66/66**，退出码 0。截图 `docs/screenshots/mode-recommended.png` 与 `mode-custom.png` 是同一时刻两种模式的对照（自定义模式顶部多出「专业参数」入口，其余骨架一致）。决策与代价见 `DECISIONS.md` D-018 |
 
 > 与本文档配套的还有：`README.md`（项目主文档）、`docs/SESSION_SUMMARY.md`（会话总结与实际验证边界，
-> 第 5 节按"已修复 / 仍然存在"列出代码审查发现）、`docs/DECISIONS.md`（17 条决策的备选方案与代价）、
+> 第 5 节按"已修复 / 仍然存在"列出代码审查发现）、`docs/DECISIONS.md`（18 条决策的备选方案与代价）、
 > `docs/CORE_IMPLEMENTATION.md`（核心实现说明）、`docs/TEST_CASES.md`（边界与异常用例）。

@@ -41,7 +41,7 @@ const RULES: Rule[] = [
     test: /Unknown encoder|Encoder .* not found|Cannot load .*dll|Cannot load nvcuda|No capable devices found/i,
     kind: 'unsupported-codec',
     message: '当前环境不支持所选的编码器',
-    hint: '这通常是显卡加速不可用导致的。请在「高级选项 → 视频编码器」里改回不带「显卡加速」的软编码（H.264 / H.265）后重试。',
+    hint: '这通常是显卡加速不可用导致的。请在「专业参数 → 视频编码器」里改回不带「显卡加速」的软编码（H.264 / H.265）后重试。',
   },
   {
     test: /Could not find tag for codec|Tag .* incompatible with output codec|not supported in container|Codec .* is not supported/i,

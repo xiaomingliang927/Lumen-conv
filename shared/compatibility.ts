@@ -190,7 +190,7 @@ export function checkCompatibility(ctx: CheckContext): CompatibilityIssue[] {
     issues.push({
       level: 'block',
       message: `${containerDef.label} 容器不支持 ${videoLabel(vCodec)}`,
-      suggestion: '请在「高级选项」里换一个编码器，或改回推荐用途',
+      suggestion: '请在「专业参数」里换一个编码器，或改回推荐用途',
       fix: { videoCodecId: 'h264' },
     });
   }

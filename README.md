@@ -15,14 +15,25 @@
 
 **便携版（Windows，解压即用）** —— 三个附件按需选一个：
 
-| 附件 | 大小 | 适合谁 |
-| --- | --- | --- |
-| [`Lumen-conv-portable-v1.0.0.7z`](https://github.com/xiaomingliang927/Lumen-conv/releases/download/v1.0.0/Lumen-conv-portable-v1.0.0.7z) | **152.9 MB** | **推荐**。完整版、体积最小。Windows 11 资源管理器可直接解压；Windows 10 需装 7-Zip / Bandizip / WinRAR |
-| [`Lumen-conv-portable-v1.0.0.zip`](https://github.com/xiaomingliang927/Lumen-conv/releases/download/v1.0.0/Lumen-conv-portable-v1.0.0.zip) | 226.5 MB | 完整版、通用格式，任何解压工具都能开 |
+> ### ⬇ [点此下载 Lumen-conv-portable-v1.0.0.7z（152.9 MB · 推荐）](https://ghfast.top/https://github.com/xiaomingliang927/Lumen-conv/releases/download/v1.0.0/Lumen-conv-portable-v1.0.0.7z)
+>
+> 上面这个链接**走 `ghfast.top` 加速镜像**，已实测可下（HTTP 206 + 文件头魔数 + 大小一致）。
+> GitHub 直连在实测网络下会直接连不上或只有 0.02 MB/s，所以默认给你镜像地址。
+> 想下别的包、或想走直连 / 换备用镜像，见下表。
+
+| 附件 | 加速下载 | 直连 GitHub | 大小 | 适合谁 |
+| --- | --- | --- | --- | --- |
+| `Lumen-conv-portable-v1.0.0.7z` | **[⬇ ghfast.top](https://ghfast.top/https://github.com/xiaomingliang927/Lumen-conv/releases/download/v1.0.0/Lumen-conv-portable-v1.0.0.7z)** | [直连](https://github.com/xiaomingliang927/Lumen-conv/releases/download/v1.0.0/Lumen-conv-portable-v1.0.0.7z) | **152.9 MB** | **推荐**。完整版、体积最小。Windows 11 资源管理器可直接解压；Windows 10 需装 7-Zip / Bandizip / WinRAR |
+| `Lumen-conv-portable-v1.0.0.zip` | **[⬇ ghfast.top](https://ghfast.top/https://github.com/xiaomingliang927/Lumen-conv/releases/download/v1.0.0/Lumen-conv-portable-v1.0.0.zip)** | [直连](https://github.com/xiaomingliang927/Lumen-conv/releases/download/v1.0.0/Lumen-conv-portable-v1.0.0.zip) | 226.5 MB | 完整版、通用格式，任何解压工具都能开 |
+| `Lumen-conv-slim-v1.0.0.zip` | **[⬇ ghfast.top](https://ghfast.top/https://github.com/xiaomingliang927/Lumen-conv/releases/download/v1.0.0/Lumen-conv-slim-v1.0.0.zip)** | [直连](https://github.com/xiaomingliang927/Lumen-conv/releases/download/v1.0.0/Lumen-conv-slim-v1.0.0.zip) | 119.5 MB | **精简版**：不内置 ffmpeg，首次运行需在「设置 → 运行环境」指定你自己的 ffmpeg 路径 |
+
+> 镜像地址的构造规则就是把**原始直连地址接在镜像域名后面**；
+> 换附件名即可换包，例如 `https://ghfast.top/https://github.com/…/Lumen-conv-slim-v1.0.0.zip`。
+> `ghfast.top` 连不上时可换备用镜像：把同一个原始地址接在 `https://gh-proxy.com/` 或
+> `https://ghproxy.net/` 后面（这两个也实测可用）。
+>
 > 体积会随构建小幅浮动：下面讲压缩算法与镜像测速时引用的是**上一版**的实测值
 > （`153.6 MB` / `227.4 MB`）——两个版本差不到 1 MB，结论不变。
-
-| [`Lumen-conv-slim-v1.0.0.zip`](https://github.com/xiaomingliang927/Lumen-conv/releases/download/v1.0.0/Lumen-conv-slim-v1.0.0.zip) | 119.5 MB | **精简版**：不内置 ffmpeg，首次运行需在「设置 → 运行环境」指定你自己的 ffmpeg 路径 |
 
 完整版**解压即用**：解压到任意目录，双击 `Lumen-conv.exe`，无需安装、也无需另装 ffmpeg。
 
@@ -34,18 +45,12 @@
 > | `https://ghfast.top/` | 0.09 MB/s | 约 27 分钟 |
 > | `https://gh-proxy.com/` | **0.59 MB/s** | **约 4.4 分钟** |
 >
-> 用法就是把原始地址**接在镜像后面**。推荐附件（`.7z`）的两个加速地址：
+> ⚠️ 速度是**在开发这台机器上实测**的，不同网络/时段差别很大，请以你本地为准。
+> 另外**直连可能不是"慢"而是"根本连不上"**：本轮复查时直连请求直接失败，
+> 而四个镜像（`ghfast.top` / `gh-proxy.com` / `ghproxy.net` / `hk.gh-proxy.com`）
+> 全部返回 HTTP 206、文件头魔数与大小都正确 —— 所以默认入口给的是镜像链接。
 >
-> ```
-> https://gh-proxy.com/https://github.com/xiaomingliang927/Lumen-conv/releases/download/v1.0.0/Lumen-conv-portable-v1.0.0.7z
-> https://ghfast.top/https://github.com/xiaomingliang927/Lumen-conv/releases/download/v1.0.0/Lumen-conv-portable-v1.0.0.7z
-> ```
->
-> 换成别的附件名就是另外两个包（`-portable-v1.0.0.zip` / `-slim-v1.0.0.zip`）。
->
-> ⚠️ 速度是**在开发这台机器上实测**的，不同网络/时段差别很大，请以你本地为准；
-> 两个镜像都验证过内容正确（HTTP 206 + 文件头魔数 + 大小一致），
-> 但**第三方镜像会看到你的下载流量**，介意的话可以用最小的 `.7z` 直连慢慢下。
+> ⚠️ 第三方镜像会看到你的下载流量，介意的话可以用最小的 `.7z` 直连慢慢下。
 
 <details>
 <summary>为什么 .7z 比 .zip 小 83 MB（点开看构成）</summary>

@@ -7,7 +7,7 @@
 
 | 项 | 实际值 |
 | --- | --- |
-| 交付形态 | Windows 桌面客户端（Electron 38 + Vue 3 + Vite + TypeScript）。便携版目录 **560.2 MB**、精简版目录 **282.2 MB**；GitHub Release 三个附件：**153.6 MB（.7z）/ 227.4 MB（.zip）/ 119.5 MB（精简版）** |
+| 交付形态 | Windows 桌面客户端（Electron 38 + Vue 3 + Vite + TypeScript）。便携版目录 **560.2 MB**、精简版目录 **282.2 MB**；GitHub Release 三个附件：**152.9 MB（.7z）/ 226.5 MB（.zip）/ 119.5 MB（精简版）** |
 | 7 条原始需求 | 全部落地；逐条对照见第 3 节与 `README.md` 的"需求对照" |
 | 工作轮次 | 首轮实现 + **4 轮真实用户反馈迭代** + 1 轮定向优化（用户从 10 个方向里勾了 6 项）+ 1 轮分发发布 |
 | 决策记录 | **27 条** ADR 风格决策（`docs/DECISIONS.md` D-001 … D-027），每条含备选方案、代价与适用边界 |
@@ -231,10 +231,10 @@
 - **便携版**：`npm run dist:portable` 离线手工组装（`release/Lumen-conv-便携版/`，602.4 MB），
   实测自检 **83/83 通过、退出码 0**
 - **精简版**：`npm run dist:portable:slim`（282.2 MB），实测 **15/15 通过**
-- **GitHub Release**：`v1.0.0`，附件 `Lumen-conv-portable-v1.0.0.zip`（227.4 MB）
+- **GitHub Release**：`v1.0.0`，附件 `Lumen-conv-portable-v1.0.0.zip`（226.5 MB）
   - 上传后 GitHub 把中文附件名清洗成了 `Lumen-conv-.-v1.0.0.zip`，
     看着像坏文件，已用 API `PATCH` 改名成纯 ASCII（秒级，不必重传 237 MB）
-  - 已验证**匿名可下载**：HTTP 200、227.4 MB、前 4 字节是合法 ZIP 魔数
+  - 已验证**匿名可下载**：HTTP 200、体积一致、前 4 字节是合法 ZIP 魔数
 - **README 顶部**加了直接下载入口，评审不必自己构建
 
 **后续（用户反馈"太大了下载太慢了"）**：先量清楚下载量的构成，再动手：
@@ -259,14 +259,14 @@
 
 | 附件 | 大小 | 说明 |
 | --- | --- | --- |
-| `Lumen-conv-portable-v1.0.0.7z` | **153.6 MB** | 推荐：完整版、最小 |
-| `Lumen-conv-portable-v1.0.0.zip` | 227.4 MB | 通用格式 |
+| `Lumen-conv-portable-v1.0.0.7z` | **152.9 MB** | 推荐：完整版、最小 |
+| `Lumen-conv-portable-v1.0.0.zip` | 226.5 MB | 通用格式 |
 | `Lumen-conv-slim-v1.0.0.zip` | 119.5 MB | 精简版（需自备 ffmpeg） |
 
 **关于"慢"，实测数据比猜测有用**：在开发机上按 1 MB 分片量了三条通道（均验证内容正确：
 HTTP 206 + 文件头魔数 + 大小一致）：
 
-| 通道 | 实测速度 | 下完 153.6 MB 需要 |
+| 通道 | 实测速度 | 下完 152.9 MB 需要 |
 | --- | --- | --- |
 | 直连 GitHub | 0.02 MB/s | **约 142 分钟** |
 | `https://ghfast.top/` | 0.09 MB/s | 约 27 分钟 |
@@ -545,7 +545,7 @@ release/Lumen-conv-便携版/Lumen-conv.exe --smoke \
 | 代码推送 | **已完成**。`main` 分支包含本项目全部源码；`git log --oneline` 可看到从首轮实现到发布的分轮提交（含每轮用户反馈的修复提交） |
 | 分支 | `main`（本地与 `origin/main` 一致，工作区干净） |
 | Release | **`v1.0.0` 已发布**：<https://github.com/xiaomingliang927/Lumen-conv/releases/tag/v1.0.0> |
-| Release 附件 | `Lumen-conv-portable-v1.0.0.zip`（**227.4 MB**，完整便携版 602.4 MB 压缩后）。已用匿名请求验证：HTTP 200、大小一致、前 4 字节是合法 ZIP 魔数 |
+| Release 附件 | `Lumen-conv-portable-v1.0.0.zip`（**226.5 MB**，完整便携版 560.3 MB 压缩后）。已用匿名请求验证：HTTP 200、大小一致、前 4 字节是合法 ZIP 魔数 |
 | 源码获取 | `git clone` 后执行 `npm run setup`（下载 Electron 运行时与 ffmpeg/ffprobe 二进制），再 `npm run dev` |
 | 开箱即用 | 不想构建就直接下 Release 附件：解压后双击 `Lumen-conv.exe`（无需安装、无需另装 ffmpeg） |
 

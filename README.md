@@ -17,15 +17,18 @@
 
 | 附件 | 大小 | 适合谁 |
 | --- | --- | --- |
-| [`Lumen-conv-portable-v1.0.0.7z`](https://github.com/xiaomingliang927/Lumen-conv/releases/download/v1.0.0/Lumen-conv-portable-v1.0.0.7z) | **153.6 MB** | **推荐**。完整版、体积最小。Windows 11 资源管理器可直接解压；Windows 10 需装 7-Zip / Bandizip / WinRAR |
-| [`Lumen-conv-portable-v1.0.0.zip`](https://github.com/xiaomingliang927/Lumen-conv/releases/download/v1.0.0/Lumen-conv-portable-v1.0.0.zip) | 227.4 MB | 完整版、通用格式，任何解压工具都能开 |
+| [`Lumen-conv-portable-v1.0.0.7z`](https://github.com/xiaomingliang927/Lumen-conv/releases/download/v1.0.0/Lumen-conv-portable-v1.0.0.7z) | **152.9 MB** | **推荐**。完整版、体积最小。Windows 11 资源管理器可直接解压；Windows 10 需装 7-Zip / Bandizip / WinRAR |
+| [`Lumen-conv-portable-v1.0.0.zip`](https://github.com/xiaomingliang927/Lumen-conv/releases/download/v1.0.0/Lumen-conv-portable-v1.0.0.zip) | 226.5 MB | 完整版、通用格式，任何解压工具都能开 |
+> 体积会随构建小幅浮动：下面讲压缩算法与镜像测速时引用的是**上一版**的实测值
+> （`153.6 MB` / `227.4 MB`）——两个版本差不到 1 MB，结论不变。
+
 | [`Lumen-conv-slim-v1.0.0.zip`](https://github.com/xiaomingliang927/Lumen-conv/releases/download/v1.0.0/Lumen-conv-slim-v1.0.0.zip) | 119.5 MB | **精简版**：不内置 ffmpeg，首次运行需在「设置 → 运行环境」指定你自己的 ffmpeg 路径 |
 
 完整版**解压即用**：解压到任意目录，双击 `Lumen-conv.exe`，无需安装、也无需另装 ffmpeg。
 
 > **下载慢怎么办（本机实测，直连慢到不可用）**
 >
-> | 通道 | 实测速度 | 下完 153.6 MB 需要 |
+> | 通道 | 实测速度 | 下完 152.9 MB 需要 |
 > | --- | --- | --- |
 > | 直连 GitHub | 0.02 MB/s | **约 142 分钟** |
 > | `https://ghfast.top/` | 0.09 MB/s | 约 27 分钟 |
@@ -47,7 +50,7 @@
 <details>
 <summary>为什么 .7z 比 .zip 小 83 MB（点开看构成）</summary>
 
-实测 zip（227.4 MB）里的压缩后占用：
+实测 zip（226.5 MB）里的压缩后占用：
 
 | 压缩后 | 内容 |
 | --- | --- |
@@ -58,7 +61,7 @@
 | ~33 MB | 其余 dll / pak / icudtl 等 |
 
 两个 ffmpeg 二进制合计 107 MB，是除了框架之外的最大项。
-改用 **7z（LZMA2）** 重压后整体降到 153.6 MB —— 同样的内容，只是压缩算法更强。
+改用 **7z（LZMA2）** 重压后整体降到 152.9 MB —— 同样的内容，只是压缩算法更强。
 另外打包脚本会自动**精简语言包**（Electron 自带 55 个 `.pak` 共 43.7 MB，本应用全中文界面，
 只保留 zh-CN / en-US / en-GB，省下 42 MB）。
 </details>

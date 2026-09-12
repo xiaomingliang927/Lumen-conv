@@ -220,6 +220,11 @@ rec.blocks.filter(可见) !== cus.blocks.filter(可见)       // 只比较，不
 > `docs/SESSION_SUMMARY.md` 第 4.3 节；决策记录见 `docs/DECISIONS.md` D-017。
 > 注意：`--smoke-file=` 与 `--smoke-assets=` 在打包态都是**相对路径按 exe 所在目录解析**，
 > 所以最稳妥的用法是都传绝对路径。
+> **这条提醒是有用的**：本轮重新打包后再次核对时，仍然顺手传了相对路径
+> `--smoke-file=test-assets/samples/sample-h264.mp4`，于是自检直接以
+> `指定的测试文件不存在：…\release\Lumen-conv-便携版\test-assets\…` **退出码 1** 结束 ——
+> 一条检查都没跑。值得记一笔的地方在于：**它失败得很明确**（打印找不到哪个文件、退出码非 0），
+> 而不是"少跑了几项却显示全绿"。后者正是 A8 里那两个真 bug 的形态。
 
 ### A9. 真实素材验证：`npm run test:real:convert`
 

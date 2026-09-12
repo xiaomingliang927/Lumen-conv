@@ -77,7 +77,7 @@
 
 1. **是否要在有网络的环境补一个 NSIS 安装包？**
    便携版与精简版都已实测跑通（`release/Lumen-conv-便携版/` 602.4 MB，自检 83/83；
-   精简版 282.2 MB，自检 14/14），但 **NSIS 安装包本机做不出来**：
+   精简版 282.2 MB，自检 15/15），但 **NSIS 安装包本机做不出来**：
    `electron-builder --win nsis` 需要额外工具链（`app-builder-bin` / `nsis` / `winCodeSign`）
    与一份与 `@electron/get` 不通用的 Electron 缓存，两次实测都以
    `Timeout awaiting 'request' for 600000ms` 失败（见 `SESSION_SUMMARY.md` 4.3 与 `DECISIONS.md` D-017）。

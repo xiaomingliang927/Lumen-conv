@@ -284,7 +284,7 @@ release/Lumen-conv-便携版/Lumen-conv.exe --smoke \
   --smoke-file=<绝对路径> --smoke-assets=<仓库的 test-assets 目录> --smoke-convert
 ```
 
-实测 **84/84 通过、退出码 0**（含应用内真实转换：状态 `done`、产物 3.15 MB、进度 100%）。
+实测 **85/85 通过、退出码 0**（含应用内真实转换：状态 `done`、产物 3.15 MB、进度 100%）。
 这一步不是重复劳动——打包态会暴露开发态永远碰不到的问题，最典型的就是 `app.getAppPath()` 指向
 `resources/app.asar`（一个文件）导致的 `ENOTDIR`（见 8.2）。
 
@@ -398,7 +398,7 @@ release/Lumen-conv-便携版/
 - **开发态**：它确实等于项目根，`join(base, 'docs/screenshots')` 是正常目录；
 - **打包态**：它等于 `...\resources\app.asar` —— 那是一个**文件**。
   拿它当目录去 `mkdirSync()` 会抛 `ENOTDIR, not a directory`（实测在便携版上踩到，
-  开发态 84/84 全绿也照样暴露不了这个问题）。
+  开发态 85/85 全绿也照样暴露不了这个问题）。
 
 修复方式是 `electron/main.ts` 里新增的 `smokeBaseDir()`：
 

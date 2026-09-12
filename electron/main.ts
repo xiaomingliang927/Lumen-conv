@@ -2489,6 +2489,18 @@ async function runSmokeCheck(): Promise<void> {
       );
       await shotDelay(300);
 
+      /*
+       * 在**切到队列页之前**把「预计体积」读出来（数字挂在 data-estimate-bytes 上）。
+       * 队列页没有详情面板，等转换完再读就什么都读不到了（第一版就是这么写的，
+       * 结果拿到 0 并报"没读到预计值"）。
+       */
+      const estimateBytes = Number(
+        (await evalJs<string>(
+          '读取预计体积',
+          `(document.querySelector('.details-foot .foot-estimate')?.getAttribute('data-estimate-bytes') ?? '')`,
+        )) || '0',
+      );
+
       const clicked = await evalJs<{ clicked: boolean; label: string; disabled: boolean }>(
         '点击「开始转换」',
         `(() => {
@@ -2596,10 +2608,32 @@ async function runSmokeCheck(): Promise<void> {
           };
         })()`,
         );
+        /*
+         * 「预计体积」准不准 —— 这条是被用户反馈逼出来的。
+         *
+         * 旧实现把"体积上限"直接当成预计值返回，于是 6 秒 / 661 KB 的样本配「发微信 / QQ」
+         * （上限 100 MB）时，界面一直显示「预计 100 MB」，而真实产物是 3.16 MB —— 差 32 倍。
+         * 现在预计值改为 min(按内容的码率估算, 上限)，并要求**预计与实测相差不超过 3 倍**。
+         * 3 倍是个刻意宽松的门槛：码率模型本来就是估算，但"差一个数量级"必须能被抓住。
+         */
+        const actualBytes = Number(
+          (await evalJs<string>(
+            '读取产物实际大小',
+            `(document.querySelector('.job-card .out-size')?.getAttribute('data-bytes') ?? '')`,
+          )) || '0',
+        );
         extraChecks.push([
           '应用内转换：队列卡片显示完成与产物大小',
           queueReport.state.includes('已完成') && /\d/.test(queueReport.outSize) && queueReport.hasOpenBtn,
           `状态「${queueReport.state}」，产物 ${queueReport.outSize}，${queueReport.hasOpenBtn ? '有打开按钮' : '无打开按钮'}`,
+        ]);
+        extraChecks.push([
+          '预计体积与实测产物相符（相差不超过 3 倍，防止再把"上限"当"预计"）',
+          estimateBytes > 0 && actualBytes > 0 && estimateBytes / actualBytes <= 3 && actualBytes / estimateBytes <= 3,
+          estimateBytes > 0 && actualBytes > 0
+            ? `预计 ${(estimateBytes / 1048576).toFixed(2)} MB，实测 ${(actualBytes / 1048576).toFixed(2)} MB，` +
+              `比值 ${(estimateBytes / actualBytes).toFixed(2)}×`
+            : `没读到预计值（${estimateBytes}）或实测值（${actualBytes}）`,
         ]);
 
         /*

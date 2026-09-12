@@ -183,7 +183,7 @@ void formatDuration;
               <span>{{ formatBytes(job.sourceSizeBytes) }}</span>
               <template v-if="job.state === 'done' && job.outputSizeBytes">
                 <span class="sep">→</span>
-                <strong class="out-size">{{ formatBytes(job.outputSizeBytes) }}</strong>
+                <strong class="out-size" :data-bytes="job.outputSizeBytes">{{ formatBytes(job.outputSizeBytes) }}</strong>
                 <span class="chip chip-success">原片 {{ formatRatio(job.outputSizeBytes, job.sourceSizeBytes) }}</span>
               </template>
               <template v-if="job.state === 'running'">

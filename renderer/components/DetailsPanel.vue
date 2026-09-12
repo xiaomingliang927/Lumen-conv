@@ -405,10 +405,18 @@ function choosePreset(id: string): void {
 const estimatedText = computed(() => {
   const est = predictedOutput.value;
   if (!est || !est.bytes) return null;
+  /*
+   * 上限与预计是两件事，界面上必须分开写。
+   * 只写「预计 100 MB」的时候，用户没法知道那是"预计"还是"上限"——而这正是被反馈过的坑。
+   */
+  const capBinds = Boolean(est.limitBytes && est.limitBytes <= est.bytes + 1);
   return {
     size: formatBytes(est.bytes),
     ratio: probe.value ? formatRatio(est.bytes, probe.value.sizeBytes) : null,
     note: est.note,
+    approx: est.approximate,
+    limit: est.limitBytes ? formatBytes(est.limitBytes) : null,
+    limitNote: est.limitBytes ? (capBinds ? `已压到上限内` : `上限用不到`) : null,
   };
 });
 
@@ -1127,7 +1135,10 @@ void VIDEO_CODECS;
 
         <div v-if="options.sizeLimitMb" class="alert alert-info size-limit-note">
           <span>ℹ️</span>
-          <span>已按目标体积反推码率，<strong>质量档位不再参与决定</strong>（体积优先时码率是算出来的，不是猜出来的）</span>
+          <span>
+            上限是<strong>"不许超过"</strong>，不是目标值：命令会按上限反推码率、质量档位不再决定码率。
+            下面的「预计」是**估算**——内容简单时实际会明显小于上限（例如 6 秒的小视频，上限设 100 MB 也用不到）。
+          </span>
         </div>
 
         <div class="field-grid">
@@ -1220,11 +1231,19 @@ void VIDEO_CODECS;
     </div>
 
     <footer v-if="probe" class="details-foot">
-      <div class="foot-estimate">
+      <div
+        class="foot-estimate"
+        :data-estimate-bytes="predictedOutput?.bytes ?? ''"
+        :data-estimate-limit-bytes="predictedOutput?.limitBytes ?? ''"
+      >
         <template v-if="estimatedText">
           <span class="muted">预计</span>
           <strong>{{ estimatedText.size }}</strong>
           <span v-if="quality" class="muted">· {{ quality.label }}</span>
+          <!-- 把"上限"和"预计"分开写：上限只是不许超过，不是预计值 -->
+          <span v-if="estimatedText.limit" class="muted limit-note">
+            · 上限 {{ estimatedText.limit }}（{{ estimatedText.limitNote }}）
+          </span>
         </template>
       </div>
       <!-- 让"这个文件参数为什么和别的文件不一样"这件事有处可查、可一键还原 -->

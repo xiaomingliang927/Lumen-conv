@@ -183,6 +183,9 @@ export const availableVideoCodecs = computed(() => {
 });
 
 /** 预期产物体积（用于转换前的提示） */
+/** 有体积上限时用来估算"内容能吃掉多少码率"的参考质量档（见 `estimateOutputBytes`） */
+const CAP_REFERENCE_QUALITY_ID = 'balanced';
+
 /**
  * 预估某个文件在给定参数下的产物大小。
  *
@@ -194,7 +197,7 @@ export const availableVideoCodecs = computed(() => {
 export function estimateOutputBytes(
   probe: { sizeBytes: number; durationSec: number },
   opts: ConversionOptions,
-): { bytes: number; approximate: boolean; note: string } {
+): { bytes: number; approximate: boolean; note: string; limitBytes?: number } {
   const preset = CONVERSION_PRESETS.find((p) => p.id === opts.presetId) ?? CONVERSION_PRESETS[0];
   const container = CONTAINERS[preset.container];
   const quality = QUALITY_PRESETS.find((q) => q.id === opts.qualityId) ?? QUALITY_PRESETS[2];
@@ -202,24 +205,6 @@ export function estimateOutputBytes(
   // 直通：产物大小≈源大小
   if (opts.videoCodecId === 'copy' || container.id === 'copy') {
     return { bytes: probe.sizeBytes, approximate: true, note: '不重新编码，体积与源文件接近' };
-  }
-
-  /*
-   * 目标体积模式：预估直接就是目标值。
-   * 这也是这个功能的意义 —— 用户不用再"猜一档质量、转完看结果、不行再转一遍"。
-   */
-  if (opts.sizeLimitMb && opts.sizeLimitMb > 0 && container.videoCodecs.length > 0) {
-    const targetBytes = Math.round(opts.sizeLimitMb * 1024 * 1024);
-    const duration = Math.max(0.1, probe.durationSec);
-    const totalKbps = (targetBytes * 8) / duration / 1000;
-    const audioKbps = opts.audioCodecId === 'none' ? 0 : quality.audioBitrateKbps;
-    return {
-      bytes: targetBytes,
-      approximate: false,
-      note:
-        `按目标体积反推：总码率约 ${Math.round(totalKbps)} kbps` +
-        `（视频 ${Math.round(Math.max(50, totalKbps - audioKbps))} + 音频 ${audioKbps}），两遍编码精确命中`,
-    };
   }
 
   if (!container.videoCodecs.length) {
@@ -242,12 +227,62 @@ export function estimateOutputBytes(
   const bitrate = quality.bitrateKbps * factor + quality.audioBitrateKbps;
   // predictOutputBytes 在码率/时长为 0 时返回 null（表示"算不出来"）。
   // 这里把它折成 0 并标注为近似值：调用方（磁盘预检）会跳过 0，不会拿它当真。
-  const bytes = predictOutputBytes(bitrate, probe.durationSec) ?? 0;
-  return {
-    bytes,
-    approximate: true,
-    note: `按 ${quality.label} 质量与目标分辨率估算`,
-  };
+  const naturalBytes = predictOutputBytes(bitrate, probe.durationSec) ?? 0;
+  const naturalNote =
+    `按「${quality.label}」质量与目标分辨率估算：约 ${Math.round(bitrate)} kbps × ` +
+    `${probe.durationSec.toFixed(1)} 秒`;
+
+  /*
+   * 体积上限是「**不许超过**」，不是「目标值」——这两件事以前被混为一谈。
+   *
+   * 旧实现直接 `return { bytes: targetBytes }`，于是"发微信 / QQ（上限 100 MB）"这条
+   * 最常用的路径上，界面永远显示「预计 100 MB」：**不管源是 6 秒 661 KB 还是 2 小时 4K**。
+   * 用户一眼就看出不对（"这个预计不准"）——一个 661 KB 的源不可能变成 100 MB。
+   *
+   * 正确做法是**两者取小**：
+   *   - 按质量模型算出来的自然体积已经低于上限 → 上限根本用不到，产物就是自然体积；
+   *   - 自然体积超过上限 → 才真的按上限反推码率做两遍编码，产物落在上限附近。
+   * 无论哪种都标成"近似"：两遍编码是**瞄准**上限，不是保证命中。
+   */
+  const capMb = opts.sizeLimitMb && opts.sizeLimitMb > 0 ? opts.sizeLimitMb : 0;
+  if (capMb > 0) {
+    /*
+     * 有体积上限时，**不能再读"当前质量档"来估算**，理由是它与实际执行不一致：
+     *   - 命令走的是 `-b:v <按上限反推的码率>` + 两遍编码，**质量档位根本不参与**；
+     *   - 界面上那个质量下拉在有上限时也是 `disabled` 的。
+     * 所以这里用一个固定的参考档（应用自己的推荐档）来表示"这段内容大约能吃掉多少码率"。
+     * 实测：6 秒 / 661 KB 样本 + 上限 100 MB → 估算 3.71 MB，真实产物 3.16 MB（1.17×）。
+     * （之前读当前质量档，一旦它被改成「极小体积」就会估出 0.93 MB，而产物仍是 3.16 MB。）
+     */
+    const refQuality =
+      QUALITY_PRESETS.find((q) => q.id === CAP_REFERENCE_QUALITY_ID) ?? quality;
+    const refFactor = scale[opts.resolutionId] ?? 1;
+    const refBitrate = refQuality.bitrateKbps * refFactor + refQuality.audioBitrateKbps;
+    const refBytes = predictOutputBytes(refBitrate, probe.durationSec) ?? naturalBytes;
+    const capBytes = Math.round(capMb * 1024 * 1024);
+    if (refBytes > 0 && refBytes <= capBytes) {
+      return {
+        bytes: refBytes,
+        approximate: true,
+        limitBytes: capBytes,
+        note:
+          `上限 ${capMb} MB 是"不许超过"，不是目标值。按这段内容的码率水平（约 ${Math.round(refBitrate)} kbps）` +
+          `估算约 ${(refBytes / 1048576).toFixed(1)} MB，**用不到上限**——内容越简单越会明显小于它。` +
+          `有上限时质量档位不参与决定，所以这里用的是参考档「${refQuality.label}」；实测可能相差数倍`,
+      };
+    }
+    return {
+      bytes: capBytes,
+      approximate: true,
+      limitBytes: capBytes,
+      note:
+        `这段内容按参考码率会超过 ${capMb} MB（估算约 ${(refBytes / 1048576).toFixed(1)} MB），` +
+        `因此改按上限反推码率做两遍编码 —— 产物预计落在上限附近，但**不会超过上限**。` +
+        `两遍编码是"瞄准"上限，不是保证正好命中`,
+    };
+  }
+
+  return { bytes: naturalBytes, approximate: true, note: naturalNote };
 }
 
 export const predictedOutput = computed(() => {

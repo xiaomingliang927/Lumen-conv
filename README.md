@@ -104,7 +104,8 @@ npm run smoke:ui:full
 可点任意一张放大到整屏，Esc 关闭；
 右侧是**推荐设置**模式：视频信息收成一行摘要（`00:06 · 661 KB · 640×360 · MP4 / QuickTime · H264`，
 点「在文件夹中显示」可展开完整明细）、8 张用途卡片（当前选中「发微信 / QQ」，体积上限 100 MB）、
-「目标体积上限」与「兼容性预检」；底部为「预计 100 MB · 均衡（推荐）」与「转换这个文件」。*
+「目标体积上限」与「兼容性预检」；底部为「预计 3.71 MB · 均衡（推荐） · 上限 100 MB（上限用不到）」与「转换这个文件」。
+（上限只是"不许超过"，不是预计值 —— 6 秒的小视频再怎么转也到不了 100 MB，所以这里明确写出"用不到上限"。）*
 
 ![任务队列](docs/screenshots/queue.png)
 
@@ -274,7 +275,7 @@ npm run smoke:ui:full
 
 ### 需求 4：会话总结 + 开发者决策与反馈记录
 
-即本仓库 `docs/` 下的文档：`SESSION_SUMMARY.md`（会话总结）、`DECISIONS.md`（决策日志，D-001 … D-027）、
+即本仓库 `docs/` 下的文档：`SESSION_SUMMARY.md`（会话总结）、`DECISIONS.md`（决策日志，D-001 … D-028）、
 `FEEDBACK_LOG.md`（反馈记录）、`CORE_IMPLEMENTATION.md`（核心实现说明）、`TEST_CASES.md`（边界与异常用例）。
 其中 SESSION_SUMMARY 明确区分了"已实机验证"与"尚未验证"的部分，并把代码缺陷按"已修复 / 仍然存在"两部分列出。
 
@@ -510,7 +511,7 @@ npm run smoke:ui:full      # 再额外在应用内真的点一次「开始转换
 ```
 
 **当前实测结果**：`npm run smoke` **77/77 通过**（0 失败，总耗时 18.4s），
-`npm run smoke:ui:full` **84/84 通过、退出码 0**（三级命令的检查项是递进追加的：14 → 62 → 74），
+`npm run smoke:ui:full` **85/85 通过、退出码 0**（三级命令的检查项是递进追加的：14 → 69 → 85），
 `npm run typecheck` 主进程 `tsc` 与渲染层 `vue-tsc` 均退出码 0、零错误。
 不需要任何外部素材——测试视频用 `lavfi` 的 `testsrc2` + 正弦音现场合成，
 所以任何机器上 clone 下来（跑完 `npm run setup`）都能复现。
@@ -567,7 +568,7 @@ npm run dist:portable   # = node scripts/package-portable.mjs --build
 
 `release/` 已在 `.gitignore` 中排除（`git check-ignore -v release/` 会命中 `.gitignore` 第 4 行），所以产物不入库。
 
-便携版**实跑了全套界面自检并 83/83 通过、退出码 0**：
+便携版**实跑了全套界面自检并 84/84 通过、退出码 0**：
 
 ```bash
 release/Lumen-conv-便携版/Lumen-conv.exe --smoke \

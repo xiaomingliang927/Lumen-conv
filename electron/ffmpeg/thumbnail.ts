@@ -10,7 +10,7 @@
  * 第二次进入应用时缩略图是「秒出」的 —— 对批量导入体验影响很大。
  */
 import { createHash } from 'node:crypto';
-import { existsSync, mkdirSync, promises as fsp, statSync } from 'node:fs';
+import { existsSync, mkdirSync, promises as fsp, readFileSync, statSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import type { ThumbnailResult } from '../../shared/types';
 import { cacheDir } from './binaries';
@@ -212,7 +212,8 @@ export async function getThumbnail(
           return {
             sourcePath: filePath,
             filePath: outPath,
-            atSec: -1,
+            // 命中缓存也要答出真实帧时间（旧缓存没有旁车文件时才退回 -1）
+            atSec: readFrameTime(outPath),
             width: FRAME_WIDTH,
             height: null,
             error: null,
@@ -305,6 +306,8 @@ export async function getThumbnail(
     };
   }
 
+  writeFrameTime(outPath, firstSuccessAt);
+
   return {
     sourcePath: filePath,
     filePath: outPath,
@@ -314,6 +317,38 @@ export async function getThumbnail(
     error: null,
     cached: false,
   };
+}
+
+/**
+ * 把"这张缩略图是第几秒的"记在缓存旁边。
+ *
+ * 起因：命中缓存时原来返回 `atSec: -1`（表示"我不知道是哪一帧"），
+ * 而画面预览需要**在原图那一帧上**套参数。之前预览退而使用 `probe.thumbnailAtSec`
+ * ——那是另一套候选点算法算出来的时间，于是左边第 0 秒、右边第 1 秒，
+ * "同一帧对比"变成了两帧对比（截图里 LUMEN 水印一个 0s 一个 1s 就是这么来的）。
+ * 现在把真实时间持久化，命中缓存也能答出准确的帧时间。
+ */
+function sidecarPath(outPath: string): string {
+  return outPath.replace(/\.jpg$/i, '.json');
+}
+
+function writeFrameTime(outPath: string, atSec: number): void {
+  try {
+    writeFileSync(sidecarPath(outPath), JSON.stringify({ atSec }), 'utf8');
+  } catch {
+    /* 写不进就算了：读不到时会退回 -1，由调用方兜底 */
+  }
+}
+
+function readFrameTime(outPath: string): number {
+  try {
+    const raw = readFileSync(sidecarPath(outPath), 'utf8');
+    const v = (JSON.parse(raw) as { atSec?: unknown }).atSec;
+    if (typeof v === 'number' && Number.isFinite(v) && v >= 0) return v;
+  } catch {
+    /* 没有旁车文件（旧缓存）或内容坏了 */
+  }
+  return -1;
 }
 
 /**

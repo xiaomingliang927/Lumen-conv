@@ -35,6 +35,15 @@ export interface LoadedFile {
   path: string;
   probe: MediaProbeResult | null;
   thumbnail: string | null;
+  /**
+   * 缩略图**实际**用的抽帧时间点（由 `getThumbnail()` 返回）。
+   *
+   * 为什么不直接用 `probe.thumbnailAtSec`：那是 `probe.ts` 自己按
+   * 「时长 10%、下限 1 秒」算出来的，而 `thumbnail.ts` 的智能选帧**另有一套候选点**
+   * 并会避开黑帧 —— 两者经常不是同一个时间点。画面预览要把参数套在**原图那一帧**上，
+   * 否则左边是第 0 秒、右边是第 1 秒，"同一帧对比"就成了两帧对比。
+   */
+  thumbnailAtSec: number | null;
   status: 'analyzing' | 'ready' | 'error';
   error: string | null;
   /** 用户在界面上单独调整过的选项（未调整则继承全局） */
@@ -268,7 +277,14 @@ export async function addFiles(paths: string[]): Promise<void> {
   for (const p of paths) {
     if (known.has(p)) continue;
     known.add(p);
-    fresh.push({ path: p, probe: null, thumbnail: null, status: 'analyzing', error: null });
+    fresh.push({
+      path: p,
+      probe: null,
+      thumbnail: null,
+      thumbnailAtSec: null,
+      status: 'analyzing',
+      error: null,
+    });
   }
   if (fresh.length === 0) return;
 
@@ -311,6 +327,8 @@ export async function loadThumbnail(path: string): Promise<void> {
   if (!target) return;
   if (res.ok && res.data.filePath) {
     target.thumbnail = res.data.filePath;
+    // 记下"这张图到底是哪一帧"，供画面预览取同一帧用
+    target.thumbnailAtSec = res.data.atSec;
   } else if (res.ok && res.data.error) {
     // 缩略图失败不算致命错误，界面上给占位图即可
     target.thumbnail = null;

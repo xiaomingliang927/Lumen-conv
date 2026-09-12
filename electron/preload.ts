@@ -70,6 +70,8 @@ const api: ConverterApi = {
     ),
   setShellIntegration: (enable: boolean) =>
     call<{ ok: boolean; message: string }>('shell:set-integration', enable),
+  createDesktopShortcut: () =>
+    call<{ ok: boolean; message: string }>('shell:create-desktop-shortcut'),
   onOpenExternalFiles: (cb: (paths: string[]) => void) => {
     const handler = (_e: unknown, paths: string[]) => cb(paths);
     ipcRenderer.on('files:open-external', handler);

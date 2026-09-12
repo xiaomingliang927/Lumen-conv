@@ -127,6 +127,23 @@ async function refreshShell(): Promise<void> {
   if (res.ok) shellInfo.value = res.data;
 }
 
+const shortcutBusy = ref(false);
+
+/** 创建桌面快捷方式：图标用包内的 Lumen-conv.ico，带 "%1" 支持拖放 */
+async function makeShortcut(): Promise<void> {
+  shortcutBusy.value = true;
+  try {
+    const res = await window.converter.createDesktopShortcut();
+    if (!res.ok) {
+      showToast(`创建失败：${res.error}`, 'danger', 6000);
+      return;
+    }
+    showToast(res.data.message, res.data.ok ? 'success' : 'danger', 6000);
+  } finally {
+    shortcutBusy.value = false;
+  }
+}
+
 async function toggleShell(enable: boolean): Promise<void> {
   shellBusy.value = true;
   try {
@@ -365,9 +382,31 @@ onMounted(() => {
             </button>
           </div>
         </div>
+
+        <!--
+          桌面快捷方式。
+          为什么做成应用里的按钮：发布包是**一个 zip**，里面没有快捷方式 ——
+          用户解压后自己右键"创建快捷方式"，拿到的是 exe 自身图标，而 exe 的内嵌图标换不掉
+          （rcedit 在中文路径下失效，见 D-017），于是桌面图标变成 Electron 默认的原子图标。
+          用户实测发现了这个差异。由应用来创建就能把图标指向包内的 Lumen-conv.ico，
+          并带上 "%1"，把视频拖到快捷方式上也能直接加载。
+        -->
+        <div class="pref-row">
+          <div class="pref-text">
+            <strong>桌面快捷方式</strong>
+            <span class="muted">
+              创建一个指向本程序的桌面快捷方式，图标用应用自己的图标（手动右键创建只能用
+              exe 内嵌图标，而它是 Electron 默认图标）；带 "%1" 参数，把视频拖到快捷方式上即可直接加载
+            </span>
+          </div>
+          <div class="shell-actions">
+            <button class="btn btn-sm" :disabled="shortcutBusy" @click="makeShortcut">
+              {{ shortcutBusy ? '处理中…' : '创建到桌面' }}
+            </button>
+          </div>
+        </div>
       </section>
 
-      <!-- 缓存 -->
       <section class="card">
         <header class="card-head"><h3>缓存</h3></header>
         <div class="pref-row">

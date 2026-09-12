@@ -21,16 +21,52 @@
 
 import { computed, onBeforeUnmount, ref, watch } from 'vue';
 import { activeFile, effectiveOptions } from '@/composables/useStore';
+import { formatDuration } from '@/utils/format';
 import type { ConversionOptions } from '@shared/types';
 
 const probe = computed(() => activeFile.value?.probe ?? null);
 const thumbUrl = computed(() => activeFile.value?.thumbnail ?? null);
 const hasVideo = computed(() => Boolean(probe.value?.hasVideo));
 
+/**
+ * 预览用的抽帧时间点 —— 与缩略图**同一帧**。
+ * 界面上把它显式写出来：左右两张图如果不是同一帧，"对比"这件事本身就不成立，
+ * 而这一点从图上很难看出来（尤其是动态画面）。
+ *
+ * `thumbnailAtSec` 为负数代表"不知道缩略图取自哪一帧"（命中旧缓存、没有旁车文件），
+ * 这时退回 probe 算出的时间点：不完美，但总比拿 -1 去 ffmpeg 里 seek 强。
+ */
+const frameAtSec = computed(() => {
+  const f = activeFile.value;
+  if (!f) return null;
+  const used = f.thumbnailAtSec;
+  if (typeof used === 'number' && used >= 0) return used;
+  return f.probe?.thumbnailAtSec ?? null;
+});
+const frameLabel = computed(() =>
+  renderedAtSec.value === null ? '' : `原图与效果同取 ${formatDuration(renderedAtSec.value)} 一帧`,
+);
+
 const previewUrl = ref<string | null>(null);
 const busy = ref(false);
 const error = ref<string | null>(null);
 const effects = ref<string[]>([]);
+/**
+ * **实际显示出来**的那一帧的时间点。
+ *
+ * 关键在"显示出来"：`previewUrl` 一赋值、`renderedAtSec` 就跟着改是不够的 ——
+ * `<img src>` 换掉之后浏览器还要去取图、解码、重绘，这中间元素上仍然是**上一张**图。
+ * 实测后果：自检看到 `data-preview-at` 已经等于缩略图的帧时间，于是截图，
+ * 而截到的还是上一次渲染（第 1 秒）那张 —— 断言与 DOM 属性全都"正确"，图是错的。
+ * 所以这个值只在 `<img>` 的 `load` 事件里推进。
+ */
+const renderedAtSec = ref<number | null>(null);
+/** 最近一次请求成功、但图还没 load 完的帧时间 */
+const pendingAtSec = ref<number | null>(null);
+
+function onEffectLoaded(): void {
+  if (pendingAtSec.value !== null) renderedAtSec.value = pendingAtSec.value;
+}
 
 /** 放大查看：点任意一张图进入，Esc 或点遮罩退出 */
 const zoom = ref<'original' | 'effect' | null>(null);
@@ -48,6 +84,11 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown));
 /**
  * 只依赖**会影响构图**的参数：分辨率、画面比例、字幕烧录、裁剪起点。
  * 调音量、换编码器不该重渲染 —— 它们不改变画面。
+ *
+ * **抽帧时间点也在里面**：预览往往在缩略图之前就渲染了一次（探测先完成、缩略图后到），
+ * 那一刻只知道 probe 的时间点；等缩略图回来、真实帧时间才知道是多少。
+ * 不把帧时间算进 key 的话，图上渲染的还是旧帧，而标题上的"同取 00:0X"已经更新了 ——
+ * **文字和图片互相矛盾**（实测截图上就是左边 0s、右边 1s）。
  */
 const previewKey = computed(() => {
   const p = probe.value;
@@ -60,6 +101,7 @@ const previewKey = computed(() => {
     eff.fitMode ?? 'off',
     String(eff.burnSubtitleIndex ?? ''),
     String(eff.trimStartSec ?? ''),
+    String(frameAtSec.value ?? ''),
   ].join('|');
 });
 
@@ -83,25 +125,33 @@ async function render(): Promise<void> {
   const mine = ++token;
   busy.value = true;
   error.value = null;
+  // 记下"这次请求用的是哪一帧"，成功后据它更新标签（标签描述的是图，不是意图）
+  const askedAtSec = frameAtSec.value ?? 0;
   try {
     const res = await window.converter.previewFrame(
       p.path,
       // 必须去掉响应式代理：IPC 结构化克隆不接受 Proxy（D-016 踩过）
       JSON.parse(JSON.stringify(effectiveOptions(file))) as ConversionOptions,
-      p.thumbnailAtSec ?? 0,
+      // 取「缩略图实际用的那一帧」——不是 probe.thumbnailAtSec（那是另一套候选点算法，
+      // 两者常不是同一时刻，会导致左右两边根本不是同一帧，见 LoadedFile.thumbnailAtSec）
+      askedAtSec,
     );
     if (mine !== token) return; // 已有更新的一次请求，丢弃这次结果
     if (!res.ok) {
       previewUrl.value = null;
+      renderedAtSec.value = null;
       error.value = res.error;
       return;
     }
     previewUrl.value = res.data.filePath;
+    // 先挂"待确认"的帧时间；等 <img> 真的 load 出来再推进 renderedAtSec（见其注释）
+    pendingAtSec.value = askedAtSec;
     effects.value = res.data.effects;
     if (res.data.error) error.value = res.data.error;
   } catch (err) {
     if (mine === token) {
       previewUrl.value = null;
+      renderedAtSec.value = null;
       error.value = err instanceof Error ? err.message : String(err);
     }
   } finally {
@@ -111,12 +161,13 @@ async function render(): Promise<void> {
 </script>
 
 <template>
-  <section v-if="hasVideo" class="preview-pane">
+  <section v-if="hasVideo" class="preview-pane" :data-preview-at="renderedAtSec ?? ''">
     <header class="preview-head">
       <h3>画面效果预览</h3>
       <span v-if="busy" class="chip">渲染中…</span>
       <span v-else-if="error" class="chip chip-warn" :title="error">{{ error }}</span>
       <span v-else-if="effects.length" class="muted effects">{{ effects.join(' · ') }}</span>
+      <span v-if="frameLabel" class="muted same-frame">{{ frameLabel }}</span>
       <span class="muted tip">点图片可放大（Esc 关闭）· 只反映画面，不反映编码质量</span>
     </header>
 
@@ -128,7 +179,7 @@ async function render(): Promise<void> {
       </figure>
 
       <figure class="shot" :class="{ clickable: Boolean(previewUrl) }" @click="previewUrl && (zoom = 'effect')">
-        <img v-if="previewUrl" :src="previewUrl" alt="效果" />
+        <img v-if="previewUrl" :src="previewUrl" alt="效果" @load="onEffectLoaded" />
         <div v-else class="shot-empty">{{ busy ? '正在按当前参数渲染…' : '—' }}</div>
         <figcaption>效果（当前参数）</figcaption>
       </figure>
@@ -186,6 +237,13 @@ async function render(): Promise<void> {
 }
 .effects {
   font-size: 11.5px;
+}
+.same-frame {
+  font-size: 11.5px;
+  padding: 1px 6px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  white-space: nowrap;
 }
 .tip {
   margin-left: auto;

@@ -269,6 +269,28 @@ writeFileSync(
 await createPackage(asarStaging, path.join(resDir, 'app.asar'));
 rmSync(asarStaging, { recursive: true, force: true });
 
+/*
+ * ---- 把应用图标放进包里 ----
+ *
+ * 必须放在**主流程**里（不能只放在 createDesktopShortcut 里 —— 那个函数只在 --shortcut 时执行，
+ * 结果不带 --shortcut 打出来的包根本没有图标文件，第一版就踩了这个坑）。
+ *
+ * 为什么图标要随包分发：exe 的内嵌图标换不掉（rcedit 在含中文的路径下报
+ * `Fatal error: Unable to load file`，见 D-017），所以窗口图标、快捷方式图标、
+ * 右键菜单图标**都指向这个外置 ico**。它不在包里的话，用户解压后只能拿到
+ * Electron 默认图标 —— 用户实测发现过这个差异。
+ */
+if (existsSync(icon)) {
+  try {
+    cpSync(icon, path.join(staging, `${APP_NAME}.ico`), { force: true });
+    log(`已放入图标 ${APP_NAME}.ico（窗口 / 快捷方式 / 右键菜单都用它）`);
+  } catch (e) {
+    log(`⚠ 复制图标失败：${String(e).slice(0, 80)}`);
+  }
+} else {
+  log(`ℹ 未找到 ${path.relative(root, icon)}，跳过（窗口与快捷方式将回退为 exe 内嵌图标）`);
+}
+
 /* ------------------------------ 收尾 ------------------------------ */
 
 // 用复制而不是 rename：在 Windows 上把包含大量文件的目录改名，
@@ -309,7 +331,15 @@ function createDesktopShortcut() {
   const lnk = path.join(desktop, `${APP_NAME} 视频格式转换器.lnk`);
   // 用我们自己的 ico 作为快捷方式图标：即使 exe 内嵌图标换不掉（rcedit 不可用），
   // 桌面上显示给用户的仍然是正确图标。
-  const iconForShortcut = existsSync(icon) ? icon : `${exeFinal},0`;
+  /*
+ * 图标必须**跟着分发包走**（复制动作在主流程里完成，见上面的"把应用图标放进包里"）。
+ * 原来快捷方式的 IconLocation 指向仓库里的 `build/icon.ico`，只有在这台机器上、
+ * 且仓库没被挪走时才有图标 —— 用户下载 zip 解压后自己建快捷方式，拿到的是
+ * exe 自身的图标，而 exe 的内嵌图标换不掉（rcedit 在中文路径下失效，见 D-017），
+ * 于是就显示 Electron 默认图标。用户实测发现了这个差异。
+ */
+const packagedIcon = path.join(outDir, `${APP_NAME}.ico`);
+const iconForShortcut = existsSync(packagedIcon) ? packagedIcon : `${exeFinal},0`;
 
   // 注意：路径要按 PowerShell 单引号字面量转义（' → ''），不能用 JSON.stringify ——
   // 它会把反斜杠写成 \\，Windows 虽能容忍，但存进 .lnk 的 WorkingDirectory/IconLocation
@@ -321,6 +351,8 @@ function createDesktopShortcut() {
     `$sc = $ws.CreateShortcut(${psQuote(lnk)})`,
     `$sc.TargetPath = ${psQuote(exeFinal)}`,
     `$sc.WorkingDirectory = ${psQuote(outDir)}`,
+    // 带上 "%1"：把视频拖到这个快捷方式上时，路径会作为参数传给应用（Shell 集成支持命令行接文件）
+    '$sc.Arguments = \'"%1"\'',
     `$sc.IconLocation = ${psQuote(iconForShortcut)}`,
     `$sc.Description = ${psQuote(`${APP_NAME} 视频格式转换器 —— 视频格式转换`)}`,
     '$sc.Save()',

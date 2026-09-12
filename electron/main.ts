@@ -156,13 +156,26 @@ function shellIntegrationTargets(): {
   sendToLink: string;
   regKey: string;
   exePath: string;
+  /**
+   * 快捷方式与注册表项要用的图标路径。
+   *
+   * 打包态用 exe 旁边的 `Lumen-conv.ico`（打包脚本会放进去）—— **不能指向仓库里的
+   * build/icon.ico**：那份文件不随分发包走，用户解压后根本没这个路径，
+   * 外壳于是回退到 exe 自身图标，而 exe 的内嵌图标换不掉（rcedit 在中文路径下失效，见 D-017），
+   * 最终显示成 Electron 默认图标 —— 用户实测发现过这个差异。
+   * 开发态没有包，就用仓库里的 build/icon.ico。
+   */
+  iconPath: string;
 } {
   const exePath = app.isPackaged ? app.getPath('exe') : process.execPath;
   const appData = app.getPath('appData');
+  const packagedIcon = path.join(path.dirname(exePath), 'Lumen-conv.ico');
+  const devIcon = path.join(app.getAppPath(), 'build', 'icon.ico');
   return {
     sendToLink: path.join(appData, 'Microsoft', 'Windows', 'SendTo', 'Lumen-conv 转换.lnk'),
     regKey: 'HKCU\\Software\\Classes\\SystemFileAssociations\\video\\shell\\LumenConv',
     exePath,
+    iconPath: app.isPackaged ? packagedIcon : devIcon,
   };
 }
 
@@ -321,6 +334,37 @@ async function runSmokeCheck(): Promise<void> {
       'Shell 集成：命令行传入的文件被自动加载（右键/发送到/拖到 exe 上的共同入口）',
       loaded.names.some((n) => n.includes(want)),
       `argv 传入 ${want} → 列表 ${loaded.count} 个：${loaded.names.join(', ') || '（空）'}`,
+    ]);
+  }
+
+  /*
+   * 图标是否随包分发（2026-09 新增）。
+   *
+   * 打包态 exe 的内嵌图标换不掉（rcedit 在中文路径下失效，见 D-017），所以窗口图标、
+   * 快捷方式图标、右键菜单图标全部指向 exe 旁边的 `Lumen-conv.ico`。
+   * 这个文件一旦漏放，表现是"图标悄悄变回 Electron 默认原子图标"—— 不会报错、不会崩，
+   * 只能靠人眼发现。用户就是这么发现的，所以这里把它变成一条断言。
+   */
+  if (app.isPackaged) {
+    const iconBeside = path.join(path.dirname(app.getPath('exe')), 'Lumen-conv.ico');
+    extraChecks.push([
+      '打包态：包内有 Lumen-conv.ico（窗口 / 快捷方式 / 右键菜单图标都依赖它）',
+      existsSync(iconBeside),
+      existsSync(iconBeside) ? iconBeside : `缺失：${iconBeside}（图标会回退成 Electron 默认图标）`,
+    ]);
+  } else {
+    /* 开发态：创建桌面快捷方式必须拒绝（那时 exe 是 electron.exe，指向它是误导） */
+    const sc = await evalJs<{ ok: boolean; message: string }>(
+      '检查开发态拒绝创建桌面快捷方式',
+      `window.converter.createDesktopShortcut().then((r) => ({
+        ok: r.ok ? r.data.ok : true,
+        message: r.ok ? r.data.message : String(r.error),
+      }))`,
+    );
+    extraChecks.push([
+      '桌面快捷方式：开发态拒绝创建并说明原因（避免指向 electron.exe）',
+      sc.ok === false && sc.message.includes('开发态'),
+      sc.message.slice(0, 90),
     ]);
   }
 
@@ -550,6 +594,46 @@ async function runSmokeCheck(): Promise<void> {
       await shotDelay(400);
     }
     await shotDelay(600);
+    /**
+     * 等「画面效果预览」也渲染完再截图。
+     *
+     * 断言与截图是**两条独立时序**：断言（下面「单帧预览」那两条）自己会等，所以能通过；
+     * 但截图只等了 600ms —— 预览有 400ms 防抖 + ffmpeg 抽帧渲染，于是
+     * `main-with-file.png` 长期是一张「左侧原图 + 右侧正在按当前参数渲染…」的半成品。
+     * 这张图正是预览功能的**唯一视觉证据**，半成品等于没有证据。
+     */
+    const previewDeadline = Date.now() + 30_000;
+    let previewReadyForShot = false;
+    for (;;) {
+      previewReadyForShot = await evalJs<boolean>(
+        '等待画面效果预览渲染完成（且与缩略图同帧）',
+        /*
+         * 等三个条件同时成立才截图：
+         *   ① 效果图已经存在；
+         *   ② 不在"渲染中"；
+         *   ③ **预览实际渲染的帧 == 缩略图那一帧**。
+         *
+         * 第 ③ 条是必须的：预览会先按 probe 的时间点渲一次（那时缩略图还没好），
+         * 缩略图回来后才重渲成正确的那一帧。只等 ①② 会**在两次渲染之间截图**，
+         * 拍到的就是左边 0s、右边 1s 的错图 —— 而下面的断言在那之后才跑，
+         * 读到的是已经修正的状态，于是"断言全绿、截图是错的"。
+         */
+        `(() => {
+          const pane = document.querySelector('.preview-pane');
+          const card = document.querySelector('.file-card');
+          const eff = pane ? pane.querySelector('img[alt="效果"]') : null;
+          const busy = /渲染中/.test((pane && pane.querySelector('.preview-head') ? pane.querySelector('.preview-head').textContent : '') || '');
+          const pAt = (pane && pane.getAttribute('data-preview-at')) || '';
+          const tAt = (card && card.getAttribute('data-thumb-at')) || '';
+          return Boolean(eff) && !busy && pAt !== '' && tAt !== '' && pAt === tAt;
+        })()`,
+      );
+      if (previewReadyForShot || Date.now() > previewDeadline) break;
+      await shotDelay(300);
+    }
+    // 条件成立后再给浏览器一点时间把新图画到屏幕上（load 事件早于合成帧）
+    if (previewReadyForShot) await shotDelay(500);
+    await shotDelay(600);
     await capture('main-with-file.png');
 
     const fileReport = await evalJs<{
@@ -607,7 +691,13 @@ async function runSmokeCheck(): Promise<void> {
         /\d+×\d+/.test(fileReport.summaryText) && /H\.?26\d/i.test(fileReport.summaryText),
         fileReport.summaryText.slice(0, 70) || '未找到',
       ],
-      ['加载真实文件后：截图已生成', existsSync(path.join(outDir, 'main-with-file.png')), 'main-with-file.png'],
+      [
+        '加载真实文件后：截图已生成',
+        existsSync(path.join(outDir, 'main-with-file.png')),
+        // 详情里写清"截图等到预览渲染完才拍" —— 否则这张图很容易退化成
+        // 「原图 + 正在按当前参数渲染…」的半成品，而断言依旧通过（见上面的等待循环）
+        `main-with-file.png（${previewReadyForShot ? '画面效果预览渲染完成后截取' : '⚠ 预览等待超时，可能是半成品'}）`,
+      ],
     );
 
     /*
@@ -1064,13 +1154,16 @@ async function runSmokeCheck(): Promise<void> {
       leftSrc: string;
       rightSrc: string;
       effectsText: string;
+      sameFrameText: string;
+      thumbAt: string;
+      previewAt: string;
       changedAfterParam: boolean;
       error: string;
     }>(
       '验证单帧预览',
       `(async () => {
         const tick = (ms) => new Promise((r) => setTimeout(r, ms));
-        const blank = { hasPair: false, leftSrc: '', rightSrc: '', effectsText: '', changedAfterParam: false, error: '' };
+        const blank = { hasPair: false, leftSrc: '', rightSrc: '', effectsText: '', sameFrameText: '', thumbAt: '', previewAt: '', changedAfterParam: false, error: '' };
         try {
           const pair = document.querySelector('.preview-pane .preview-grid');
           if (!pair) return { ...blank, error: '未找到预览区（应出现在中间栏下方）' };
@@ -1085,6 +1178,17 @@ async function runSmokeCheck(): Promise<void> {
             rightSrc = now?.getAttribute('src') ?? '';
           }
           const effectsText = (document.querySelector('.preview-pane .preview-head')?.textContent ?? '').replace(/\\s+/g, ' ').trim().slice(0, 70);
+          // 左右两张图必须来自**同一帧** —— 不是同一帧的话"对比"本身就不成立
+          const sameFrameText = (document.querySelector('.preview-pane .same-frame')?.textContent ?? '').trim();
+          /*
+           * 同帧保证的**机器可判定**形式：
+           *   - 文件卡片上写着"这张缩略图取自第几秒"（data-thumb-at）
+           *   - 预览容器上写着"实际渲染用的是第几秒"（data-preview-at）
+           * 两者必须相等。只断言"界面写了『同取』"是不够的：
+           * 文字可以写着 00:00 而图片其实是 1 秒那一帧（实测就是这样）。
+           */
+          const thumbAt = (document.querySelector('.file-card')?.getAttribute('data-thumb-at') ?? '').trim();
+          const previewAt = (document.querySelector('.preview-pane')?.getAttribute('data-preview-at') ?? '').trim();
 
           // 改画面比例 → 预览图 URL 应当变化（说明它真的重渲染，而不是渲一次就完事）
           const fitSel = [...document.querySelectorAll('.quality-block select')].find((s) =>
@@ -1112,7 +1216,7 @@ async function runSmokeCheck(): Promise<void> {
             }
           }
 
-          return { hasPair: true, leftSrc, rightSrc, effectsText, changedAfterParam, error: '' };
+          return { hasPair: true, leftSrc, rightSrc, effectsText, sameFrameText, thumbAt, previewAt, changedAfterParam, error: '' };
         } catch (e) {
           return { ...blank, error: String(e) };
         }
@@ -1120,11 +1224,18 @@ async function runSmokeCheck(): Promise<void> {
     );
     extraChecks.push(
       [
-        '单帧预览：原图与「当前参数的效果图」并排显示在中间栏（效果图由 ffmpeg 真实生成）',
-        previewUi.hasPair && previewUi.leftSrc.length > 0 && previewUi.rightSrc.includes('lumen-media'),
+        '单帧预览：原图与「当前参数的效果图」并排显示，且预览渲染的就是缩略图那一帧（效果图由 ffmpeg 真实生成）',
+        previewUi.hasPair &&
+          previewUi.leftSrc.length > 0 &&
+          previewUi.rightSrc.includes('lumen-media') &&
+          // 文字上写了同取第几秒（挡"两边不是同一帧"）
+          previewUi.sameFrameText.includes('同取') &&
+          // 缩略图实际帧 == 预览实际渲染帧（挡"文字写 00:00、图却是 1 秒那帧"）
+          previewUi.thumbAt.length > 0 &&
+          previewUi.thumbAt === previewUi.previewAt,
         previewUi.error
           ? `执行出错：${previewUi.error}`
-          : `原图=${previewUi.leftSrc.slice(0, 28)}… 效果=${previewUi.rightSrc.slice(0, 28)}…`,
+          : `原图=${previewUi.leftSrc.slice(0, 24)}… 效果=${previewUi.rightSrc.slice(0, 24)}… ${previewUi.sameFrameText}｜缩略图帧=${previewUi.thumbAt}s，预览帧=${previewUi.previewAt}s`,
       ],
       [
         '单帧预览：画面参数一变就重新渲染（不是渲染一次就完事的摆设）',
@@ -2615,6 +2726,49 @@ async function runSmokeCheck(): Promise<void> {
     console.warn('[smoke] 提示：queue.png 不存在，请先跑一次不带 --smoke-convert 的自检');
   }
   await capture('settings.png', 2);
+
+  /*
+   * 再补一张设置页下半部分的「系统集成」。
+   *
+   * 设置页比窗口高，一屏截不下：`settings.png` 拍到的是「运行环境 + 可用编码器」，
+   * 而 Shell 集成（「发送到」/ 右键菜单开关、创建桌面快捷方式）在页面最下面 ——
+   * 也就是说这两个功能在文档里**一直没有视觉证据**（截图里根本看不到）。
+   * 滚动到该卡片再拍一张，并断言它确实被拍到了（不是滚过头截了别处）。
+   */
+  const shellCardScrolled = await evalJs<boolean>(
+    '滚动到系统集成区块',
+    `(() => {
+      const cards = [...document.querySelectorAll('.settings .card')];
+      const target = cards.find((c) => (c.textContent || '').includes('系统集成'));
+      if (!target) return false;
+      target.scrollIntoView({ block: 'center' });
+      return true;
+    })()`,
+  );
+  await shotDelay(500);
+  /*
+   * 滚动后必须确认该卡片**真的落在视口里**，否则这张截图会静默地拍成
+   * 和 settings.png 一样的内容 —— 又是一次"断言通过但证据是错的"。
+   * 所以这里不写断言，而是直接硬失败（与"测试钩子不存在"同一处理级别）。
+   */
+  const shellCardInView = await evalJs<boolean>(
+    '确认系统集成区块已进入视口',
+    `(() => {
+      const cards = [...document.querySelectorAll('.settings .card')];
+      const t = cards.find((c) => (c.textContent || '').includes('系统集成'));
+      if (!t) return false;
+      const r = t.getBoundingClientRect();
+      return r.top < window.innerHeight && r.bottom > 0;
+    })()`,
+  );
+  if (!shellCardScrolled || !shellCardInView) {
+    console.error(
+      `[smoke] ✘ 设置页里没能把「系统集成」卡片滚进视口（找到=${shellCardScrolled}，可见=${shellCardInView}），` +
+        'settings-shell.png 会拍成别的内容，因此直接失败而不是留一张错图',
+    );
+    process.exit(1);
+  }
+  await capture('settings-shell.png');
   // 回到转换页
   await evalJs<boolean>(
     '切回转换页',
@@ -2684,6 +2838,28 @@ async function runSmokeCheck(): Promise<void> {
 
 /* ------------------------------ 窗口 ------------------------------ */
 
+/* ------------------------------ 窗口 ------------------------------ */
+
+/**
+ * 窗口 / 任务栏图标的外置 ico 路径。
+ *
+ * 打包态：exe 旁边的 `Lumen-conv.ico`（`package-portable.mjs` 会放进去）
+ * 开发态：仓库里的 `build/icon.ico`（由 `npm run make:icon` 生成）
+ *
+ * 为什么用外置文件而不是 exe 内嵌图标：rcedit 在含非 ASCII 字符的路径下会
+ * `Fatal error: Unable to load file`（本项目路径含中文），所以便携版 exe 的内嵌图标
+ * 换不掉，只能靠"外置 ico + 显式 icon 选项"把窗口与快捷方式的图标修正过来。见 D-017。
+ */
+function resolveAppIcon(): string | undefined {
+  const candidates = app.isPackaged
+    ? [path.join(path.dirname(app.getPath('exe')), 'Lumen-conv.ico')]
+    : [path.join(app.getAppPath(), 'build', 'icon.ico')];
+  for (const p of candidates) {
+    if (existsSync(p)) return p;
+  }
+  return undefined;
+}
+
 function createWindow(): void {
   mainWindow = new BrowserWindow({
     width: 1360,
@@ -2691,6 +2867,16 @@ function createWindow(): void {
     minWidth: 1024,
     minHeight: 680,
     show: false,
+    /*
+     * 窗口 / 任务栏图标。
+     *
+     * 不设这一项时 Windows 会用 **exe 的内嵌图标**，而便携版 exe 的内嵌图标换不掉
+     * （rcedit 在含中文的路径下报 `Unable to load file`，见 D-017），
+     * 于是任务栏与窗口左上角显示的是 Electron 默认图标 —— 用户实测发现了这个不一致。
+     * 这里显式指定外置 ico：打包态用 exe 旁边的 `Lumen-conv.ico`（打包脚本会放进去），
+     * 开发态用仓库里的 `build/icon.ico`；都不存在时返回 undefined，走 Electron 默认行为。
+     */
+    icon: resolveAppIcon(),
     title: 'Lumen-conv 视频格式转换器',
     backgroundColor: '#0f1115',
     autoHideMenuBar: true,
@@ -2926,8 +3112,22 @@ function registerIpc(): void {
     async (filePath: string, options: ConversionOptions, atSec: number) => {
       const probe = await probeMedia(filePath, { ffprobePath: requireFfprobe() });
       const ffmpeg = requireFfmpeg();
-      /* 抽帧时间点与缩略图一致：左右两张图必须是**同一帧**，对比才有意义 */
-      const at = atSec > 0 ? atSec : probe.thumbnailAtSec || Math.min(1, probe.durationSec / 2);
+      /*
+       * 抽帧时间点与缩略图一致：左右两张图必须是**同一帧**，对比才有意义。
+       *
+       * 判"有没有传"必须用 `>= 0` 而不是 `> 0`：**第 0 帧是合法取值**，
+       * 而 `> 0` 会把 0 当成"没指定"，于是"请给我第 0 帧"被悄悄换成
+       * `probe.thumbnailAtSec`（6 秒样本上是 1 秒）。后果极具迷惑性：
+       * 界面上写着「同取 00:00」，渲染出来的却是第 1 秒那一帧，
+       * 而 DOM 属性、断言、日志**全都显示 0** —— 只有把图抠出来比对水印才能发现。
+       * 这是本项目第二次踩"0 被当成空值"（另一次是 `formatDuration(0)` 显示成 `—`）。
+       */
+      const hasAt = typeof atSec === 'number' && Number.isFinite(atSec) && atSec >= 0;
+      const at = hasAt
+        ? atSec
+        : Number.isFinite(probe.thumbnailAtSec) && probe.thumbnailAtSec >= 0
+          ? probe.thumbnailAtSec
+          : Math.min(1, probe.durationSec / 2);
       const res = await renderPreview(probe, options, at, ffmpeg);
       /*
        * 顺手清掉过期预览图。
@@ -2990,8 +3190,59 @@ function registerIpc(): void {
     },
   );
 
+  /**
+   * 创建桌面快捷方式。
+   *
+   * 为什么要由应用来做（而不是让用户右键"创建快捷方式"）：
+   * 发布包是一个 zip，里面**没有**快捷方式；用户手动创建的快捷方式只能用 exe 的内嵌图标，
+   * 而便携版的 exe 内嵌图标换不掉（rcedit 在中文路径下失效，见 D-017），
+   * 结果桌面图标是 Electron 默认的原子图标 —— 用户实测发现了这个差异。
+   * 这里由应用创建：图标指向包内的 `Lumen-conv.ico`，并带上 `"%1"`
+   * （把视频拖到快捷方式上能直接加载，与 Shell 集成的命令行接文件是一条路）。
+   */
+  handle<{ ok: boolean; message: string }>('shell:create-desktop-shortcut', async () => {
+    if (process.platform !== 'win32') return { ok: false, message: '目前只支持 Windows' };
+    if (!app.isPackaged) {
+      return {
+        ok: false,
+        message: '开发态不创建：这时 exe 是 electron.exe，快捷方式会指向它而不是本应用；请用便携版创建',
+      };
+    }
+    const exe = app.getPath('exe');
+    const dir = path.dirname(exe);
+    const desktop = path.join(app.getPath('home'), 'Desktop');
+    const lnk = path.join(desktop, 'Lumen-conv 视频格式转换器.lnk');
+    const esc = (s: string) => s.replace(/'/g, "''");
+    const ico = path.join(dir, 'Lumen-conv.ico');
+
+    const ps = `$ErrorActionPreference='Stop';
+      $ws = New-Object -ComObject WScript.Shell;
+      $sc = $ws.CreateShortcut('${esc(lnk)}');
+      $sc.TargetPath = '${esc(exe)}';
+      $sc.WorkingDirectory = '${esc(dir)}';
+      $sc.Arguments = '"%1"';
+      $ico = '${esc(ico)}';
+      if (Test-Path -LiteralPath $ico) { $sc.IconLocation = $ico } else { $sc.IconLocation = $exe };
+      $sc.Description = 'Lumen-conv 视频格式转换器 —— 视频格式转换';
+      $sc.Save();
+      'OK'`;
+
+    const r = await exec('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', ps], {
+      timeoutMs: 20000,
+    });
+    if (r.code !== 0) {
+      return { ok: false, message: (r.stderr || '创建失败').slice(0, 200) };
+    }
+    return {
+      ok: true,
+      message: existsSync(ico)
+        ? `已创建到桌面（图标使用 ${path.basename(ico)}）`
+        : '已创建到桌面（未找到包内图标，使用了 exe 自身图标）',
+    };
+  });
+
   handle<{ ok: boolean; message: string }>('shell:set-integration', async (enable: boolean) => {
-    const { sendToLink, regKey, exePath } = shellIntegrationTargets();
+    const { sendToLink, regKey, exePath, iconPath } = shellIntegrationTargets();
     if (process.platform !== 'win32') {
       return { ok: false, message: '目前只支持 Windows' };
     }
@@ -3012,12 +3263,14 @@ function registerIpc(): void {
          if (-not (Test-Path -LiteralPath $sendTo)) { New-Item -ItemType Directory -Path $sendTo -Force | Out-Null }
          $ws=New-Object -ComObject WScript.Shell;
          $lnk=$ws.CreateShortcut('${esc(sendToLink)}');
-         $lnk.TargetPath=$exe; $lnk.Arguments='"'"'%1'"'"''; $lnk.IconLocation=$exe; $lnk.Save();
+         # 图标优先用包内的 Lumen-conv.ico；它不存在时才回退到 exe 自身图标
+         $ico = if (Test-Path -LiteralPath '${esc(iconPath)}') { '${esc(iconPath)}' } else { $exe };
+         $lnk.TargetPath=$exe; $lnk.Arguments='"'"'%1'"'"''; $lnk.IconLocation=$ico; $lnk.Save();
          # 2) 右键菜单：只加一个动词，不动文件关联
          $key='${esc(regKey)}';
          New-Item -Path $key -Force | Out-Null;
          New-ItemProperty -Path $key -Name '(default)' -Value '用 Lumen-conv 转换' -Force | Out-Null;
-         New-ItemProperty -Path $key -Name 'Icon' -Value $exe -Force | Out-Null;
+         New-ItemProperty -Path $key -Name 'Icon' -Value $ico -Force | Out-Null;
          New-Item -Path "$key\\command" -Force | Out-Null;
          New-ItemProperty -Path "$key\\command" -Name '(default)' -Value ('"' + $exe + '" "%1"') -Force | Out-Null;
          'OK'`

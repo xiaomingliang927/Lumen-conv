@@ -18,7 +18,7 @@
 | 附件 | 大小 | 适合谁 |
 | --- | --- | --- |
 | [`Lumen-conv-portable-v1.0.0.7z`](https://github.com/xiaomingliang927/Lumen-conv/releases/download/v1.0.0/Lumen-conv-portable-v1.0.0.7z) | **153.6 MB** | **推荐**。完整版、体积最小。Windows 11 资源管理器可直接解压；Windows 10 需装 7-Zip / Bandizip / WinRAR |
-| [`Lumen-conv-portable-v1.0.0.zip`](https://github.com/xiaomingliang927/Lumen-conv/releases/download/v1.0.0/Lumen-conv-portable-v1.0.0.zip) | 237.1 MB | 完整版、通用格式，任何解压工具都能开 |
+| [`Lumen-conv-portable-v1.0.0.zip`](https://github.com/xiaomingliang927/Lumen-conv/releases/download/v1.0.0/Lumen-conv-portable-v1.0.0.zip) | 227.4 MB | 完整版、通用格式，任何解压工具都能开 |
 | [`Lumen-conv-slim-v1.0.0.zip`](https://github.com/xiaomingliang927/Lumen-conv/releases/download/v1.0.0/Lumen-conv-slim-v1.0.0.zip) | 119.5 MB | **精简版**：不内置 ffmpeg，首次运行需在「设置 → 运行环境」指定你自己的 ffmpeg 路径 |
 
 完整版**解压即用**：解压到任意目录，双击 `Lumen-conv.exe`，无需安装、也无需另装 ffmpeg。
@@ -47,7 +47,7 @@
 <details>
 <summary>为什么 .7z 比 .zip 小 83 MB（点开看构成）</summary>
 
-实测 zip（237.1 MB）里的压缩后占用：
+实测 zip（227.4 MB）里的压缩后占用：
 
 | 压缩后 | 内容 |
 | --- | --- |
@@ -77,6 +77,7 @@
 ```bash
 # 第 1 步：产出 main.png / main-with-file.png / size-plan.png / mode-recommended.png
 #          / mode-custom.png / main-advanced.png / queue.png（空队列）/ settings.png
+#          / settings-shell.png（设置页下半部分「系统集成」）
 npm run smoke:ui:file
 
 # 第 2 步：额外产出 queue-done.png（有任务），不会覆盖第 1 步的 queue.png
@@ -89,10 +90,13 @@ npm run smoke:ui:full
 
 ![主界面（已加载文件）](docs/screenshots/main-with-file.png)
 
-*转换页加载真实视频后：左侧文件卡片带**智能选帧缩略图**与时长角标，
-右侧信息面板显示 **8 行**视频信息——容器 `MP4 / QuickTime`、时长 `00:06`、文件大小 `661 KB`、总码率 `902 kbps`、
-`640×360 · 30 fps`、`H264 · High`、`yuv420p`、`AAC · 单声道 · 44.1 kHz`；
-下方是 9 张预设卡片（默认选中「MP4 通用兼容」）与「预计 3.71 MB · 均衡（推荐）」的体积预估。*
+*转换页加载真实视频后：左侧文件卡片带**智能选帧缩略图**与时长角标；
+中间栏是**画面效果预览**——左「原图」右「效果（当前参数）」并排，标题写明
+「原图与效果同取 00:00 一帧」（两张图**必须**取自同一帧，否则"对比"不成立；自检会断言缩略图帧 == 预览帧），
+可点任意一张放大到整屏，Esc 关闭；
+右侧是**推荐设置**模式：视频信息收成一行摘要（`00:06 · 661 KB · 640×360 · MP4 / QuickTime · H264`，
+点「在文件夹中显示」可展开完整明细）、8 张用途卡片（当前选中「发微信 / QQ」，体积上限 100 MB）、
+「目标体积上限」与「兼容性预检」；底部为「预计 100 MB · 均衡（推荐）」与「转换这个文件」。*
 
 ![任务队列](docs/screenshots/queue.png)
 
@@ -128,6 +132,14 @@ npm run smoke:ui:full
 *设置页：ffmpeg / ffprobe 实际路径与版本、每个编码器的可用性（硬件编码器为**真实试跑**结果）、
 转换偏好、主题与缓存清理。这一页信息量最大，能直接反映运行环境是否正常。*
 
+![Shell 集成与桌面快捷方式](docs/screenshots/settings-shell.png)
+
+*设置页下半部分的「系统集成」：「发送到」菜单 + 资源管理器右键菜单开关、创建桌面快捷方式。
+设置页比窗口高，`settings.png` 一屏截不到这里，所以自检会滚到该卡片再拍一张 ——
+并且**校验它真的进了视口**，滚不到就直接失败退出，不留一张"看着像设置页、其实没拍到"的错图。
+注意图上写的是「当前形态不支持（开发态不写注册表…请用便携版开启）」：这是**有意为之的安全行为**，
+开发态的 exe 是 `electron.exe`，注册了只会启动一个裸 Electron；打包版里这里是可点的「一键开启」。*
+
 ### 「输出尺寸」与「画面比例」
 
 ![输出尺寸与画面比例](docs/screenshots/size-plan.png)
@@ -151,6 +163,11 @@ npm run smoke:ui:full
 *左边「推荐设置」是**选用途**（8 张卡片 + "选一个用途就够了，细节我来定"）；
 右边「自定义」是**纯参数界面**——用途卡片整块消失，专业参数直接铺开，参数在前、信息与预检在后。*
 
+![自定义模式的专业参数](docs/screenshots/main-advanced.png)
+
+*「自定义」模式下的专业参数字段：输出格式 / 编码器 / 音轨 / 字幕 / 裁剪 / 命名 / 帧率 / 画面比例。
+自检会断言这些字段**不横向溢出**（实测最宽元素 `field@336`，面板宽 400px）。*
+
 > 这两张图是**被真实用户反馈逼出来的**，而且是两轮：
 > 第一轮"推荐设置和自定义没区别啊"——当时两种模式的差异全在折叠线以下；
 > 第二轮"自定义不要这个推荐，缺少专业性，这个用最初那个版本自己调整更合适"——
@@ -159,10 +176,10 @@ npm run smoke:ui:full
 > "推荐模式用途卡片齐全"（实测 **8 张**），并把两种模式的首屏区块都打印出来。
 > 完整取舍见 [docs/DECISIONS.md](docs/DECISIONS.md) 的 D-018 与 D-019。
 
-> 说明：`docs/screenshots/` 下的 9 张 PNG 由上面那两步命令**自动生成并覆盖**
-> （第 1 步出 `main` / `main-with-file` / `mode-*` / `main-advanced` / `queue` / `settings`，
+> 说明：`docs/screenshots/` 下的 10 张 PNG 由上面那两步命令**自动生成并覆盖**
+> （第 1 步出 `main` / `main-with-file` / `mode-*` / `main-advanced` / `queue` / `settings` / `settings-shell`，
 > 第 2 步出 `queue-done.png`），
-> `smoke:ui:full` 一级同时执行 **83 项**界面断言（断言内容见 [docs/TEST_CASES.md](docs/TEST_CASES.md) 的 A7 / A8 / B0 节，
+> `smoke:ui:full` 一级同时执行 **84 项**界面断言（断言内容见 [docs/TEST_CASES.md](docs/TEST_CASES.md) 的 A7 / A8 / B0 节，
 > 截图清单见 [docs/screenshots/README.md](docs/screenshots/README.md)）。
 > 在你本地首次跑出截图之前，上面的图片引用会是空链接。
 
@@ -249,7 +266,7 @@ npm run smoke:ui:full
 
 ### 需求 4：会话总结 + 开发者决策与反馈记录
 
-即本仓库 `docs/` 下的文档：`SESSION_SUMMARY.md`（会话总结）、`DECISIONS.md`（决策日志，D-001 … D-026）、
+即本仓库 `docs/` 下的文档：`SESSION_SUMMARY.md`（会话总结）、`DECISIONS.md`（决策日志，D-001 … D-027）、
 `FEEDBACK_LOG.md`（反馈记录）、`CORE_IMPLEMENTATION.md`（核心实现说明）、`TEST_CASES.md`（边界与异常用例）。
 其中 SESSION_SUMMARY 明确区分了"已实机验证"与"尚未验证"的部分，并把代码缺陷按"已修复 / 仍然存在"两部分列出。
 
@@ -481,11 +498,11 @@ npm run smoke              # 端到端冒烟：合成素材 → ffprobe 探测 �
 npm run smoke -- --quick   # 只跑核心用例（跳过 H.265 / 旋转样本的合成）
 npm run smoke:ui           # 构建后以 --smoke 启动 Electron，做界面自检并截图（14 项检查）
 npm run smoke:ui:file      # 上一项 + 加载真实视频后再截图（62 项检查）
-npm run smoke:ui:full      # 再额外在应用内真的点一次「开始转换」并等任务跑完（83 项检查）
+npm run smoke:ui:full      # 再额外在应用内真的点一次「开始转换」并等任务跑完（84 项检查）
 ```
 
 **当前实测结果**：`npm run smoke` **77/77 通过**（0 失败，总耗时 18.4s），
-`npm run smoke:ui:full` **83/83 通过、退出码 0**（三级命令的检查项是递进追加的：14 → 62 → 74），
+`npm run smoke:ui:full` **84/84 通过、退出码 0**（三级命令的检查项是递进追加的：14 → 62 → 74），
 `npm run typecheck` 主进程 `tsc` 与渲染层 `vue-tsc` 均退出码 0、零错误。
 不需要任何外部素材——测试视频用 `lavfi` 的 `testsrc2` + 正弦音现场合成，
 所以任何机器上 clone 下来（跑完 `npm run setup`）都能复现。
@@ -542,7 +559,7 @@ npm run dist:portable   # = node scripts/package-portable.mjs --build
 
 `release/` 已在 `.gitignore` 中排除（`git check-ignore -v release/` 会命中 `.gitignore` 第 4 行），所以产物不入库。
 
-便携版**实跑了全套界面自检并 82/82 通过、退出码 0**：
+便携版**实跑了全套界面自检并 83/83 通过、退出码 0**：
 
 ```bash
 release/Lumen-conv-便携版/Lumen-conv.exe --smoke \
@@ -967,10 +984,10 @@ npm run dist:portable:slim   # 精简版：不内置 ffmpeg，约 324 MB
 | 限制 | 说明 |
 | --- | --- |
 | **没有 NSIS 安装包** | `npm run dist:nsis`（`electron-builder --win nsis`）在本机**做不出来**：它需要额外工具链（`app-builder-bin` / `nsis` / `winCodeSign`）与一份与 `@electron/get` **不通用**的 Electron 缓存，受限网络下两次实测都以 `Timeout awaiting 'request' for 600000ms` 失败。**"能装成安装包"目前仍只是配置层面的准备**，替代方案是已实测跑通的 `npm run dist:portable`（离线便携版，见"打包"一节） |
-| **便携版 exe 用 Electron 默认图标、没有版本信息** | `package-portable.mjs` 会用 `electron-winstaller` 附带的 `rcedit.exe` 写图标与版本信息，但该版本 rcedit 在**路径含非 ASCII 字符**时（本项目路径含中文）报 `Fatal error: Unable to load file`，脚本如实跳过该步骤（实测 `Lumen-conv.exe` 的版本信息仍是 Electron 原值：`ProductName=Electron`、`OriginalFilename=electron.exe`）。**脚本刻意不做环境相关绕行**（例如把 exe 复制到临时 ASCII 路径再改回来），图标缺失不影响运行 |
+| **便携版 exe 的文件图标与版本信息仍是 Electron 原值** | `package-portable.mjs` 会用 `electron-winstaller` 附带的 `rcedit.exe` 写图标与版本信息，但该版本 rcedit 在**路径含非 ASCII 字符**时（本项目路径含中文）报 `Fatal error: Unable to load file`，脚本如实跳过该步骤（实测 `Lumen-conv.exe` 的版本信息仍是 Electron 原值：`ProductName=Electron`、`OriginalFilename=electron.exe`）。**脚本刻意不做环境相关绕行**（把 exe 复制到 ASCII 临时路径再改回来也走不通：用户名本身含中文，用户目录下没有纯 ASCII 的位置）。<br>**但图标并未放着不管**（见 `DECISIONS.md` D-027）：窗口/任务栏图标由 `BrowserWindow({ icon })` 显式指定、快捷方式与右键菜单图标指向**包内的 `Lumen-conv.ico`**，设置页还提供「创建桌面快捷方式」——所以"打开应用后看到的图标"是对的；**只有"在资源管理器里看 `Lumen-conv.exe` 这个文件本身"时，显示的仍是 Electron 默认原子图标**，这一条如实写在这里 |
 | **`test-assets/` 会被测试重新生成** | `test-assets/output/` 与 `test-assets/samples/` 已在 `.gitignore` 中排除，但**忽略 ≠ 清空**：这两个目录在磁盘上**仍然有文件**（`output/` 是最近一次 `npm run smoke` 的 9 个产物，`samples/` 是合成素材）。**已知现象**：界面自检的默认输出目录就是源文件同目录 + 自动改名策略，所以每跑一次 `npm run smoke:ui:full` 就会在 `test-assets/samples/` 里多出一个 `sample-h264 (n).mp4`；带序号的文件在多轮测试后被清理过，但**下次再跑仍会重新产生** |
 | **硬件编码器参数未在真卡上验证** | 本机只有 Intel 核显可用（**H.264 QSV 实测可用**），没有 NVIDIA / AMD 显卡：NVENC 与 AMF 在设置页显示"编码器初始化失败（通常是驱动问题）"。`-cq`（NVENC）/ `-b:v`（AMF）这些真卡参数**没有在任何硬件上跑过**，也没有任何一条真实转码用例走硬件编码器 |
-| **没有单元测试框架** | 没有 Vitest / Jest，纯函数（`renderer/utils/format.ts`、`progress.ts` 的解析、`sanitizeFileName()`）未做边界穷举。当前只有端到端冒烟（77 项）与界面自检（三级 14 / 62 / 74（另有 smoke:ui:cli 16 项） 项）两层 |
+| **没有单元测试框架** | 没有 Vitest / Jest，纯函数（`renderer/utils/format.ts`、`progress.ts` 的解析、`sanitizeFileName()`）未做边界穷举。当前只有端到端冒烟（77 项）与界面自检（三级 14 / 69 / 84，另有 `smoke:ui:cli` 17 项）两层 |
 | 字幕只做软字幕 | 不支持烧录（hardsub）、不支持外挂字幕文件、不支持把 MKV 内封字幕抽成 `.srt`；WebM 容器下会自动剔除图形/ASS 字幕并提示改用 MKV |
 | **没有断点续传** | 转换中断（取消 / 崩溃 / 关机）只能整段重来 |
 | **GIF 只统计整段调色板** | `palettegen=stats_mode=diff` 针对整段视频统计颜色，超长视频做 GIF 很慢且体积大。UI 只在预设提示里建议"先裁剪 3-6 秒"，**没有硬性限制** |
@@ -1060,6 +1077,16 @@ npm run fetch:electron
 
 ## License
 
-MIT © 2025 xiaomingliang
+**本仓库的源代码**：MIT © 2025 xiaomingliang（见仓库根目录的 `LICENSE`，与 `package.json` 的 `license` 字段一致）。
 
-（License 见仓库根目录的 `LICENSE` 文件，与 `package.json` 的 `license` 字段一致。）
+**但分发包（Release 里的便携版 / 精简版）不是纯 MIT**，这一点需要如实说明：
+
+- 便携版内置的 `ffmpeg.exe` / `ffprobe.exe` 取自 yt-dlp/FFmpeg-Builds 的 **GPL** 构建
+  （文件名即 `ffmpeg-master-latest-win64-gpl.zip`）。GPL 具有传染性，
+  **把这两个二进制和自己程序一起打包分发，整个分发物就应当按 GPL 处理**。
+- 精简版（`--slim`）**不内置**这两个二进制，因此精简版分发物不因此受 GPL 约束。
+- 本项目的 `LICENSE` 文件里只有 MIT，**没有**为"打包了 GPL 二进制"这件事单独附加声明；
+  这是已知的、尚未处理的合规缺口（若要正式对外发布，应补上 GPL 全文与 ffmpeg 的来源说明）。
+
+之所以保留 GPL 构建而不是换成 LGPL：LGPL 构建**不含** `libx264` / `libx265`，
+本工具的核心功能（H.264/H.265 软编码）会直接失效——用不了的功能换来许可证漂亮，不划算。

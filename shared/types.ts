@@ -464,6 +464,11 @@ export interface ConverterApi {
   >;
   /** 加入 / 移除「发送到」与右键菜单（仅 HKCU，可撤销） */
   setShellIntegration(enable: boolean): Promise<IpcResponse<{ ok: boolean; message: string }>>;
+  /**
+   * 创建桌面快捷方式（图标指向包内 ico，并带 "%1" 以便拖放文件）。
+   * 发布包里没有快捷方式，用户手动右键创建只能用 exe 内嵌图标 —— 那是 Electron 默认图标。
+   */
+  createDesktopShortcut(): Promise<IpcResponse<{ ok: boolean; message: string }>>;
   /** 第二个实例把文件转交给当前窗口时触发 */
   onOpenExternalFiles(cb: (paths: string[]) => void): () => void;
   detectFfmpeg(): Promise<IpcResponse<FfmpegDetectResult>>;

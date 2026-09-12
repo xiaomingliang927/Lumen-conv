@@ -274,8 +274,8 @@ export function effectiveOptions(file: LoadedFile): ConversionOptions {
 | 命令 | 做的事 | 检查项 |
 | --- | --- | --- |
 | `npm run smoke:ui` | 启动窗口 → 等 `data-store-ready` → 逐页切换截图 | **14 项** |
-| `npm run smoke:ui:file` | 加 `--smoke-file=…`，通过 `window.__lumenAddFiles` 走真实 `addFiles` 路径加载一个视频 | **68 项** |
-| `npm run smoke:ui:full` | 再加 `--smoke-convert`，在应用内真的点一次「开始转换」并等任务跑到终态 | **83 项** |
+| `npm run smoke:ui:file` | 加 `--smoke-file=…`，通过 `window.__lumenAddFiles` 走真实 `addFiles` 路径加载一个视频 | **69 项** |
+| `npm run smoke:ui:full` | 再加 `--smoke-convert`，在应用内真的点一次「开始转换」并等任务跑到终态 | **84 项** |
 
 **同一套自检也会在打包态跑一遍**：便携版可以带参数启动，跑的是完全相同的 `runSmokeCheck()`：
 
@@ -284,7 +284,7 @@ release/Lumen-conv-便携版/Lumen-conv.exe --smoke \
   --smoke-file=<绝对路径> --smoke-assets=<仓库的 test-assets 目录> --smoke-convert
 ```
 
-实测 **83/83 通过、退出码 0**（含应用内真实转换：状态 `done`、产物 3.15 MB、进度 100%）。
+实测 **84/84 通过、退出码 0**（含应用内真实转换：状态 `done`、产物 3.15 MB、进度 100%）。
 这一步不是重复劳动——打包态会暴露开发态永远碰不到的问题，最典型的就是 `app.getAppPath()` 指向
 `resources/app.asar`（一个文件）导致的 `ENOTDIR`（见 8.2）。
 
@@ -346,7 +346,7 @@ const evalJs = async <T>(label: string, expression: string): Promise<T> => {
 
 | 步骤 | 命令 | 新增截图 |
 | --- | --- | --- |
-| 1 | `npm run smoke:ui:file`（或 `--smoke --smoke-file=…`，**不带** `--smoke-convert`） | `main.png`、`main-with-file.png`、**`queue.png`（空队列）**、`settings.png` |
+| 1 | `npm run smoke:ui:file`（或 `--smoke --smoke-file=…`，**不带** `--smoke-convert`） | `main.png`、`main-with-file.png`、**`queue.png`（空队列）**、`settings.png`、`settings-shell.png`（设置页下半部分，两轮都会产出） |
 | 2 | `npm run smoke:ui:full`（带 `--smoke-convert`） | 只新增 `queue-done.png`，**不动 `queue.png`** |
 
 实测两个文件已**哈希不同**：`queue.png`（空队列）与 `queue-done.png`（有任务）。
@@ -398,7 +398,7 @@ release/Lumen-conv-便携版/
 - **开发态**：它确实等于项目根，`join(base, 'docs/screenshots')` 是正常目录；
 - **打包态**：它等于 `...\resources\app.asar` —— 那是一个**文件**。
   拿它当目录去 `mkdirSync()` 会抛 `ENOTDIR, not a directory`（实测在便携版上踩到，
-  开发态 83/83 全绿也照样暴露不了这个问题）。
+  开发态 84/84 全绿也照样暴露不了这个问题）。
 
 修复方式是 `electron/main.ts` 里新增的 `smokeBaseDir()`：
 

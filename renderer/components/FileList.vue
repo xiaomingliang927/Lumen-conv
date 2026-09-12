@@ -152,6 +152,7 @@ void stateLabel;
         :key="file.path"
         class="file-card"
         :class="{ active: file.path === activePath, error: file.status === 'error', picked: isSelected(file) }"
+        :data-thumb-at="file.thumbnailAtSec ?? ''"
         @click="activePath = file.path"
       >
         <!-- 勾选框：只有分析成功的文件才可选，分析中/失败的点不动 -->
